@@ -1,0 +1,42 @@
+name: Terraform Transit Gateway Module
+#logo: logo/logo.jpg
+badges:
+  - name: Latest Release
+    image: https://img.shields.io/github/release/<owner/repo>.svg?style=for-the-badge
+    url: https://github.com/<owner/repo>/releases/latest
+  - name: Last Updated
+    image: https://img.shields.io/github/last-commit/<owner/repo>.svg?style=for-the-badge
+    url: https://github.com/<owner/repo>/commits
+
+license: "APACHE2"
+
+copyrights:
+  - name: "Cloud Ops Works LLC"
+    url: "https://cloudopsworks.co"
+    year: "2026"
+
+github_repo: <owner/repo>
+
+description: |-
+  <description>
+
+# Introduction to the project
+introduction: |-
+#  This is an introduction.
+
+# How to use this project
+usage: |-
+
+# Example usage
+examples: |-
+
+# How to get started quickly
+quickstart: |-
+
+include:
+  - "docs/targets.md"
+  - "docs/terraform.md"
+
+contributors:
+  - name: "Cristian Beraha"
+    github: "berahac"

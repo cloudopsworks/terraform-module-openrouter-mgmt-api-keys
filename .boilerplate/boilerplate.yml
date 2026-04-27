@@ -1,0 +1,28 @@
+##
+# (c) 2021-2026
+#     Cloud Ops Works LLC - https://cloudops.works/
+#     Find us on:
+#       GitHub: https://github.com/cloudopsworks
+#       WebSite: https://cloudops.works
+#     Distributed Under Apache v2.0 License
+#
+# Terragrunt Boilerplate Configuration
+variables:
+  # Generic Boilerplate Variables Setup
+  - name: is_hub
+    order: 0
+    description: "Is this a hub configuration?"
+    type: bool
+    default: false
+  - name: tags
+    order: 1
+    description: "Tags"
+    type: map
+    default: {}
+  # End - Generic Boilerplate Variables Setup
+
+hooks:
+  after:
+    - command: "git"
+      args: ["add", "."]
+      dir: "{{ outputFolder }}"
