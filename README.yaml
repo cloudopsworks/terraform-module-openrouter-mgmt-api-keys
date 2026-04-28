@@ -1,12 +1,12 @@
-name: Terraform Transit Gateway Module
+name: Terraform OpenRouter Management API Keys Module
 #logo: logo/logo.jpg
 badges:
   - name: Latest Release
-    image: https://img.shields.io/github/release/<owner/repo>.svg?style=for-the-badge
-    url: https://github.com/<owner/repo>/releases/latest
+    image: https://img.shields.io/github/release/cloudopsworks/terraform-module-openrouter-mgmt-api-keys.svg?style=for-the-badge
+    url: https://github.com/cloudopsworks/terraform-module-openrouter-mgmt-api-keys/releases/latest
   - name: Last Updated
-    image: https://img.shields.io/github/last-commit/<owner/repo>.svg?style=for-the-badge
-    url: https://github.com/<owner/repo>/commits
+    image: https://img.shields.io/github/last-commit/cloudopsworks/terraform-module-openrouter-mgmt-api-keys.svg?style=for-the-badge
+    url: https://github.com/cloudopsworks/terraform-module-openrouter-mgmt-api-keys/commits
 
 license: "APACHE2"
 
@@ -15,23 +15,288 @@ copyrights:
     url: "https://cloudopsworks.co"
     year: "2026"
 
-github_repo: <owner/repo>
+github_repo: cloudopsworks/terraform-module-openrouter-mgmt-api-keys
 
 description: |-
-  <description>
+  Terraform module for managing OpenRouter workspace API keys through the
+  [cloudopsworks/openrouter](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest)
+  provider. Each managed API key is persisted immediately to AWS Secrets Manager because
+  the OpenRouter management API only returns the raw secret value when the key is created.
 
 # Introduction to the project
 introduction: |-
-#  This is an introduction.
+  ## Overview
+
+  This module manages OpenRouter API keys for existing workspaces and stores the generated
+  credentials in AWS Secrets Manager.
+
+  ### What it does
+
+  1. **Creates OpenRouter API keys** for one or more existing workspaces.
+  2. **Supports per-key controls** such as spend limits, reset windows, disabled state,
+     BYOK accounting, expiration, and creator assignment.
+  3. **Persists secrets in AWS Secrets Manager** either as plain strings or as JSON objects
+     in the form `{"api_key":"<value>"}`.
+
+  ### Naming convention
+
+  For both the OpenRouter API key name and the AWS Secrets Manager secret name, you can use:
+
+  | Mode | Result |
+  |------|--------|
+  | `name_prefix` | `<name_prefix>-<system_name>` |
+  | `name` | fixed value, used verbatim |
+
+  Secret paths default to `/<org_unit>/<env_name>/<env_type>/<workspace_key>` and can be
+  overridden per API key with `secret.path`.
+
+  ### Secret structure
+
+  | `plain` | Stored value |
+  |---------|-------------|
+  | `false` (default) | `{"api_key": "or-..."}` |
+  | `true` | `or-...` |
 
 # How to use this project
 usage: |-
+  ## Terragrunt scaffolding workflow
+
+  ```sh
+  # 1. Create and enter the target deployment directory
+  mkdir -p production/us-east-1/spoke-001/openrouter-mgmt-api-keys
+  cd production/us-east-1/spoke-001/openrouter-mgmt-api-keys
+
+  # 2. Scaffold the module (do NOT use --working-dir)
+  terragrunt scaffold github.com/cloudopsworks/terraform-module-openrouter-mgmt-api-keys
+
+  # 3. Edit inputs.yaml with deployment-specific values
+  vi inputs.yaml
+
+  # 4. Apply
+  terragrunt apply
+  ```
+
+  ## Example generated `inputs.yaml`
+
+  ```yaml
+  # Module configuration
+  # settings:                               # (Optional) Settings for OpenRouter workspace API key management
+  #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
+  #     engineering:                        # Logical key used to identify the workspace in this module
+  #       workspace_id: "ws_1234567890"    # (Required) OpenRouter workspace UUID
+  #       api_keys:                         # (Optional) Map of API key configurations keyed by logical name
+  #         backend-service:
+  #           name_prefix: "backend"       # (Optional) Name prefix; final name = name_prefix + "-" + system_name
+  #           name: "fixed-name"           # (Optional) Fixed name for the API key (mutually exclusive with name_prefix)
+  #           limit: 250                    # (Optional) Spending limit in USD
+  #           limit_reset: "monthly"       # (Optional) Reset interval. Valid values: daily, weekly, monthly
+  #           include_byok_in_limit: true   # (Optional) Whether BYOK usage counts toward the limit
+  #           disabled: false               # (Optional) Whether the key is disabled. Default: provider default
+  #           expires_at: "2026-12-31T23:59:59Z" # (Optional) UTC ISO-8601 expiration timestamp
+  #           creator_user_id: "user_123"  # (Optional) OpenRouter organization member ID to set as creator
+  #           secret:                       # (Optional) AWS Secrets Manager configuration for storing the API key
+  #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name
+  #             name: "fixed-secret"       # (Optional) Fixed secret name (mutually exclusive with secret.name_prefix)
+  #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
+  #             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
+  #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
+  settings:
+    workspaces:
+      engineering:
+        workspace_id: "ws_1234567890"
+        api_keys:
+          backend-service:
+            name_prefix: "backend"
+            limit: 250
+            limit_reset: "monthly"
+            include_byok_in_limit: true
+            secret:
+              name_prefix: "backend-openrouter"
+              description: "Backend service OpenRouter key"
+          break-glass:
+            name: "openrouter-break-glass"
+            disabled: false
+            expires_at: "2026-12-31T23:59:59Z"
+            secret:
+              name: "openrouter-break-glass"
+              plain: true
+  ```
+
+  ## Generated `terragrunt.hcl`
+
+  ```hcl
+  locals {
+    local_vars  = yamldecode(file("./inputs.yaml"))
+    spoke_vars  = yamldecode(file(find_in_parent_folders("spoke-inputs.yaml")))
+    region_vars = yamldecode(file(find_in_parent_folders("region-inputs.yaml")))
+    env_vars    = yamldecode(file(find_in_parent_folders("env-inputs.yaml")))
+    global_vars = yamldecode(file(find_in_parent_folders("global-inputs.yaml")))
+
+    local_tags  = jsondecode(file("./local-tags.json"))
+    spoke_tags  = jsondecode(file(find_in_parent_folders("spoke-tags.json")))
+    region_tags = jsondecode(file(find_in_parent_folders("region-tags.json")))
+    env_tags    = jsondecode(file(find_in_parent_folders("env-tags.json")))
+    global_tags = jsondecode(file(find_in_parent_folders("global-tags.json")))
+
+    tags = merge(
+      local.global_tags,
+      local.env_tags,
+      local.region_tags,
+      local.spoke_tags,
+      local.local_tags
+    )
+  }
+
+  include "root" {
+    path = find_in_parent_folders("root.hcl")
+  }
+
+  terraform {
+    source = "git::https://github.com/cloudopsworks/terraform-module-openrouter-mgmt-api-keys.git"
+  }
+
+  inputs = {
+    is_hub     = false
+    org        = local.env_vars.org
+    spoke_def  = local.spoke_vars.spoke
+    settings   = try(local.local_vars.settings, {})
+    extra_tags = local.tags
+  }
+  ```
+
+  ## Input model
+
+  ### Top-level variables
+
+  | Variable | Type | Required | Description |
+  |----------|------|----------|-------------|
+  | `org.organization_name` | `string` | yes | Organisation name used in tags |
+  | `org.organization_unit` | `string` | yes | Org unit; becomes the first segment of the default secret path |
+  | `org.environment_type` | `string` | yes | Environment type such as `production` or `staging` |
+  | `org.environment_name` | `string` | yes | Environment name such as `prod` or `stg` |
+  | `spoke_def` | `string` | no | Three-digit spoke identifier. Default: `"001"` |
+  | `extra_tags` | `map(string)` | no | Additional tags merged onto all AWS secrets |
+  | `settings.workspaces` | `map(object)` | no | Map of OpenRouter workspaces keyed by logical name |
+
+  ### `settings.workspaces.<key>`
+
+  | Attribute | Type | Required | Description |
+  |-----------|------|----------|-------------|
+  | `workspace_id` | `string` | yes | Existing OpenRouter workspace UUID |
+  | `api_keys` | `map(object)` | no | API keys to manage inside the workspace |
+
+  ### `settings.workspaces.<key>.api_keys.<key>`
+
+  | Attribute | Type | Required | Description |
+  |-----------|------|----------|-------------|
+  | `name_prefix` | `string` | no* | Name prefix composed as `name_prefix-<system_name>` |
+  | `name` | `string` | no* | Fixed API key name |
+  | `limit` | `number` | no | Spending limit in USD |
+  | `limit_reset` | `string` | no | One of `daily`, `weekly`, `monthly` |
+  | `include_byok_in_limit` | `bool` | no | Whether BYOK usage counts toward the limit |
+  | `disabled` | `bool` | no | Whether the API key is disabled |
+  | `expires_at` | `string` | no | UTC ISO-8601 expiration timestamp |
+  | `creator_user_id` | `string` | no | Creator member identifier in OpenRouter |
+  | `secret.name_prefix` | `string` | no | Secret name prefix composed as `name_prefix-<system_name>` |
+  | `secret.name` | `string` | no | Fixed secret name |
+  | `secret.path` | `string` | no | Secret path prefix. Default: `/<org_unit>/<env_name>/<env_type>/<workspace_key>` |
+  | `secret.plain` | `bool` | no | Store plain string instead of JSON. Default: `false` |
+  | `secret.description` | `string` | no | Human-readable description for the AWS secret |
+
+  \* Exactly one of `name_prefix` or `name` must be provided.
 
 # Example usage
 examples: |-
+  ## Minimal example
+
+  ```hcl
+  inputs = {
+    org = {
+      organization_name = "acme"
+      organization_unit = "platform"
+      environment_type  = "production"
+      environment_name  = "prod"
+    }
+
+    settings = {
+      workspaces = {
+        engineering = {
+          workspace_id = "ws_1234567890"
+          api_keys = {
+            backend = {
+              name_prefix = "backend"
+            }
+          }
+        }
+      }
+    }
+  }
+  ```
+
+  ## Workspace with budgeted and expiring keys
+
+  ```hcl
+  inputs = {
+    org = {
+      organization_name = "acme"
+      organization_unit = "platform"
+      environment_type  = "production"
+      environment_name  = "prod"
+    }
+
+    settings = {
+      workspaces = {
+        shared-services = {
+          workspace_id = "ws_abcdef123456"
+          api_keys = {
+            ci = {
+              name_prefix           = "ci"
+              limit                 = 100
+              limit_reset           = "monthly"
+              include_byok_in_limit = true
+              secret = {
+                name_prefix = "ci-openrouter"
+              }
+            }
+
+            temporary = {
+              name       = "temporary-openrouter-key"
+              expires_at = "2026-12-31T23:59:59Z"
+              secret = {
+                name  = "temporary-openrouter-key"
+                plain = true
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  ```
 
 # How to get started quickly
 quickstart: |-
+  1. Ensure the runtime has:
+     - **AWS credentials** for Secrets Manager access.
+     - **OpenRouter management API credentials** through the provider configuration or the
+       `OPENROUTER_API_KEY` environment variable.
+
+  2. Scaffold a new Terragrunt deployment directory and populate `inputs.yaml`.
+
+  3. Run:
+
+     ```sh
+     terragrunt init
+     terragrunt plan
+     terragrunt apply
+     ```
+
+  4. Retrieve a stored key from AWS Secrets Manager:
+
+     ```sh
+     aws secretsmanager get-secret-value \
+       --secret-id "$(terragrunt output -json secret_names | jq -r 'to_entries[0].value')"
+     ```
 
 include:
   - "docs/targets.md"

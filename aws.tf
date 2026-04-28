@@ -6,3 +6,5 @@
 #       WebSite: https://cloudops.works
 #     Distributed Under Apache v2.0 License
 #
+
+data "aws_region" "current" {}
