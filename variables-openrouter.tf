@@ -10,7 +10,9 @@
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
-#       workspace_id: "ws_1234567890"    # (Required) OpenRouter workspace UUID
+#       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
+#       workspace_name: "Engineering"    # (Optional) OpenRouter workspace name resolved via the provider workspace data source. Mutually exclusive with workspace_id and workspace_slug
+#       workspace_slug: "engineering"    # (Optional) OpenRouter workspace slug resolved via the provider workspace data source. Mutually exclusive with workspace_id and workspace_name
 #       api_keys:                         # (Optional) Map of API key configurations keyed by logical name
 #         backend-service:
 #           name_prefix: "backend"       # (Optional) Name prefix; final name = name_prefix + "-" + system_name
@@ -31,7 +33,9 @@ variable "settings" {
   description = "Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence"
   type = object({
     workspaces = optional(map(object({
-      workspace_id = string
+      workspace_id   = optional(string)
+      workspace_name = optional(string)
+      workspace_slug = optional(string)
       api_keys = optional(map(object({
         name_prefix           = optional(string)
         name                  = optional(string)
@@ -52,6 +56,17 @@ variable "settings" {
     })), {})
   })
   default = {}
+
+  validation {
+    condition = alltrue([
+      for workspace in values(try(var.settings.workspaces, {})) : length(compact([
+        try(workspace.workspace_id, null),
+        try(workspace.workspace_name, null),
+        try(workspace.workspace_slug, null)
+      ])) <= 1
+    ])
+    error_message = "Each settings.workspaces.<workspace> entry may set at most one of workspace_id, workspace_name, or workspace_slug."
+  }
 
   validation {
     condition = alltrue(flatten([
