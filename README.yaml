@@ -33,10 +33,15 @@ introduction: |-
   ### What it does
 
   1. **Creates OpenRouter API keys** for one or more existing workspaces.
-  2. **Supports per-key controls** such as spend limits, reset windows, disabled state,
+  2. **Resolves workspace selectors** from `workspace_id`, `workspace_name`, or `workspace_slug`
+     using the provider workspace data source when needed.
+  3. **Supports per-key controls** such as spend limits, reset windows, disabled state,
      BYOK accounting, expiration, and creator assignment.
-  3. **Persists secrets in AWS Secrets Manager** either as plain strings or as JSON objects
+  4. **Persists secrets in AWS Secrets Manager** either as plain strings or as JSON objects
      in the form `{"api_key":"<value>"}`.
+
+  When no workspace selector is set for an entry, the module passes `null` through for
+  `workspace_id` exactly as configured.
 
   ### Naming convention
 
@@ -83,7 +88,9 @@ usage: |-
   # settings:                               # (Optional) Settings for OpenRouter workspace API key management
   #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
   #     engineering:                        # Logical key used to identify the workspace in this module
-  #       workspace_id: "ws_1234567890"    # (Required) OpenRouter workspace UUID
+  #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
+  #       workspace_name: "Engineering"    # (Optional) OpenRouter workspace name resolved via the provider workspace data source. Mutually exclusive with workspace_id and workspace_slug
+  #       workspace_slug: "engineering"    # (Optional) OpenRouter workspace slug resolved via the provider workspace data source. Mutually exclusive with workspace_id and workspace_name
   #       api_keys:                         # (Optional) Map of API key configurations keyed by logical name
   #         backend-service:
   #           name_prefix: "backend"       # (Optional) Name prefix; final name = name_prefix + "-" + system_name
@@ -103,7 +110,7 @@ usage: |-
   settings:
     workspaces:
       engineering:
-        workspace_id: "ws_1234567890"
+        workspace_slug: "engineering"
         api_keys:
           backend-service:
             name_prefix: "backend"
@@ -120,6 +127,11 @@ usage: |-
             secret:
               name: "openrouter-break-glass"
               plain: true
+      shared-services:
+        workspace_name: "Shared Services"
+        api_keys:
+          reporting:
+            name_prefix: "reporting"
   ```
 
   ## Generated `terragrunt.hcl`
@@ -182,8 +194,12 @@ usage: |-
 
   | Attribute | Type | Required | Description |
   |-----------|------|----------|-------------|
-  | `workspace_id` | `string` | yes | Existing OpenRouter workspace UUID |
+  | `workspace_id` | `string` | no* | Existing OpenRouter workspace UUID |
+  | `workspace_name` | `string` | no* | Existing OpenRouter workspace name, resolved to an ID via `data.openrouter_workspaces` |
+  | `workspace_slug` | `string` | no* | Existing OpenRouter workspace slug, resolved to an ID via `data.openrouter_workspaces` |
   | `api_keys` | `map(object)` | no | API keys to manage inside the workspace |
+
+  \* Set at most one of `workspace_id`, `workspace_name`, or `workspace_slug`. If none are set, `null` is passed through for `workspace_id`.
 
   ### `settings.workspaces.<key>.api_keys.<key>`
 
@@ -221,7 +237,7 @@ examples: |-
     settings = {
       workspaces = {
         engineering = {
-          workspace_id = "ws_1234567890"
+          workspace_slug = "engineering"
           api_keys = {
             backend = {
               name_prefix = "backend"
@@ -247,7 +263,7 @@ examples: |-
     settings = {
       workspaces = {
         shared-services = {
-          workspace_id = "ws_abcdef123456"
+          workspace_name = "Shared Services"
           api_keys = {
             ci = {
               name_prefix           = "ci"

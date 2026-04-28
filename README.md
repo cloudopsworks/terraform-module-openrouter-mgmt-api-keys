@@ -56,10 +56,15 @@ credentials in AWS Secrets Manager.
 ### What it does
 
 1. **Creates OpenRouter API keys** for one or more existing workspaces.
-2. **Supports per-key controls** such as spend limits, reset windows, disabled state,
+2. **Resolves workspace selectors** from `workspace_id`, `workspace_name`, or `workspace_slug`
+   using the provider workspace data source when needed.
+3. **Supports per-key controls** such as spend limits, reset windows, disabled state,
    BYOK accounting, expiration, and creator assignment.
-3. **Persists secrets in AWS Secrets Manager** either as plain strings or as JSON objects
+4. **Persists secrets in AWS Secrets Manager** either as plain strings or as JSON objects
    in the form `{"api_key":"<value>"}`.
+
+When no workspace selector is set for an entry, the module passes `null` through for
+`workspace_id` exactly as configured.
 
 ### Naming convention
 
@@ -111,7 +116,9 @@ terragrunt apply
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
-#       workspace_id: "ws_1234567890"    # (Required) OpenRouter workspace UUID
+#       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
+#       workspace_name: "Engineering"    # (Optional) OpenRouter workspace name resolved via the provider workspace data source. Mutually exclusive with workspace_id and workspace_slug
+#       workspace_slug: "engineering"    # (Optional) OpenRouter workspace slug resolved via the provider workspace data source. Mutually exclusive with workspace_id and workspace_name
 #       api_keys:                         # (Optional) Map of API key configurations keyed by logical name
 #         backend-service:
 #           name_prefix: "backend"       # (Optional) Name prefix; final name = name_prefix + "-" + system_name
@@ -131,7 +138,7 @@ terragrunt apply
 settings:
   workspaces:
     engineering:
-      workspace_id: "ws_1234567890"
+      workspace_slug: "engineering"
       api_keys:
         backend-service:
           name_prefix: "backend"
@@ -148,6 +155,11 @@ settings:
           secret:
             name: "openrouter-break-glass"
             plain: true
+    shared-services:
+      workspace_name: "Shared Services"
+      api_keys:
+        reporting:
+          name_prefix: "reporting"
 ```
 
 ## Generated `terragrunt.hcl`
@@ -210,8 +222,12 @@ inputs = {
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `workspace_id` | `string` | yes | Existing OpenRouter workspace UUID |
+| `workspace_id` | `string` | no* | Existing OpenRouter workspace UUID |
+| `workspace_name` | `string` | no* | Existing OpenRouter workspace name, resolved to an ID via `data.openrouter_workspaces` |
+| `workspace_slug` | `string` | no* | Existing OpenRouter workspace slug, resolved to an ID via `data.openrouter_workspaces` |
 | `api_keys` | `map(object)` | no | API keys to manage inside the workspace |
+
+\* Set at most one of `workspace_id`, `workspace_name`, or `workspace_slug`. If none are set, `null` is passed through for `workspace_id`.
 
 ### `settings.workspaces.<key>.api_keys.<key>`
 
@@ -274,7 +290,7 @@ inputs = {
   settings = {
     workspaces = {
       engineering = {
-        workspace_id = "ws_1234567890"
+        workspace_slug = "engineering"
         api_keys = {
           backend = {
             name_prefix = "backend"
@@ -300,7 +316,7 @@ inputs = {
   settings = {
     workspaces = {
       shared-services = {
-        workspace_id = "ws_abcdef123456"
+        workspace_name = "Shared Services"
         api_keys = {
           ci = {
             name_prefix           = "ci"
@@ -353,8 +369,8 @@ Available targets:
 
 | Name | Version |
 |------|---------|
-| <a name="provider_aws"></a> [aws](#provider\_aws) | ~> 6.35 |
-| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | ~> 0.1 |
+| <a name="provider_aws"></a> [aws](#provider\_aws) | 6.42.0 |
+| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | 0.2.8 |
 
 ## Modules
 
@@ -370,6 +386,7 @@ Available targets:
 | [aws_secretsmanager_secret_version.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
 | [openrouter_api_key.this](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest/docs/resources/api_key) | resource |
 | [aws_region.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
+| [openrouter_workspaces.lookup](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest/docs/data-sources/workspaces) | data source |
 
 ## Inputs
 
@@ -378,7 +395,7 @@ Available targets:
 | <a name="input_extra_tags"></a> [extra\_tags](#input\_extra\_tags) | Extra tags to add to the resources | `map(string)` | `{}` | no |
 | <a name="input_is_hub"></a> [is\_hub](#input\_is\_hub) | Is this a hub or spoke configuration? | `bool` | `false` | no |
 | <a name="input_org"></a> [org](#input\_org) | Organization details | <pre>object({<br/>    organization_name = string<br/>    organization_unit = string<br/>    environment_type  = string<br/>    environment_name  = string<br/>  })</pre> | n/a | yes |
-| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    workspaces = optional(map(object({<br/>      workspace_id = string<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix = optional(string)<br/>          name        = optional(string)<br/>          path        = optional(string)<br/>          plain       = optional(bool, false)<br/>          description = optional(string)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
+| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    workspaces = optional(map(object({<br/>      workspace_id   = optional(string)<br/>      workspace_name = optional(string)<br/>      workspace_slug = optional(string)<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix = optional(string)<br/>          name        = optional(string)<br/>          path        = optional(string)<br/>          plain       = optional(bool, false)<br/>          description = optional(string)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
 | <a name="input_spoke_def"></a> [spoke\_def](#input\_spoke\_def) | Spoke ID Number, must be a 3 digit number | `string` | `"001"` | no |
 
 ## Outputs
