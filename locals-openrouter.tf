@@ -22,11 +22,11 @@ locals {
       try(workspace.workspace_id, null),
       try(one([
         for candidate in local.provider_workspaces : candidate.id
-        if try(workspace.workspace_name, null) != null && candidate.name == workspace.workspace_name
+        if try(workspace.workspace_name, null) != null && candidate.name == try(workspace.workspace_name, "")
       ]), null),
       try(one([
         for candidate in local.provider_workspaces : candidate.id
-        if try(workspace.workspace_slug, null) != null && candidate.slug == workspace.workspace_slug
+        if try(workspace.workspace_slug, null) != null && candidate.slug == try(workspace.workspace_slug, "")
       ]), null),
       null
     )
