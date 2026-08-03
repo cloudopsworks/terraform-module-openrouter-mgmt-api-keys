@@ -11,6 +11,12 @@ locals {
   env_tags    = jsondecode(file(find_in_parent_folders("env-tags.json")))
   global_tags = jsondecode(file(find_in_parent_folders("global-tags.json")))
 
+  openrouter_secret_name         = local.global_vars.openrouter.secrets.name
+  openrouter_secret_region       = local.global_vars.openrouter.secrets.region
+  openrouter_secret_sts_role_arn = local.global_vars.openrouter.secrets.sts_role_arn
+  openrouter_secret_sts_endpoint = local.global_vars.openrouter.secrets.sts_endpoint
+  openrouter_secret_api_key      = local.global_vars.openrouter.secrets.secret_key
+
   tags = merge(
     local.global_tags,
     local.env_tags,
@@ -22,6 +28,21 @@ locals {
 
 include "root" {
   path = find_in_parent_folders("{{ .RootFileName }}")
+}
+
+generate "provider-openrouter" {
+  path      = "provider-openrouter.g.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<EOF
+provider "openrouter" {
+  aws_secrets_manager = {
+    region    = "${local.openrouter_secret_region}"
+    secret_id = "${local.openrouter_secret_name}"
+    role_arn  = "${local.openrouter_secret_sts_role_arn}"
+    json_key  = "${local.openrouter_secret_api_key}"
+  }
+}
+EOF
 }
 
 terraform {
