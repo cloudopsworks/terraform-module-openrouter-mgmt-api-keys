@@ -72,5 +72,7 @@ jobs:
       - name: Delete local & remote Feature
         if: ${{ github.event.pull_request.merged == true && startsWith(github.head_ref, 'feature/') }}
         run: |
-          FEATURE=$(echo "${{ github.head_ref }}" | sed -e 's/feature\///g')
+          FEATURE=$(echo "$FEATURE_REF" | sed -e 's/feature\///g')
           make gitflow/feature/purge:$FEATURE
+        env:
+          FEATURE_REF: ${{ github.head_ref }}
