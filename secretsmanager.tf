@@ -28,3 +28,26 @@ resource "aws_secretsmanager_secret_version" "this" {
     jsonencode({ api_key = openrouter_api_key.this[each.key].key })
   )
 }
+
+data "aws_lambda_function" "rotation" {
+  count = var.settings.rotation_lambda == null ? 0 : startswith(var.settings.rotation_lambda, "arn:") ? 0 : 1
+
+  function_name = var.settings.rotation_lambda
+}
+
+resource "aws_secretsmanager_secret_rotation" "this" {
+  for_each = {
+    for key, api_key in local.api_keys : key => api_key
+    if var.settings.rotation_lambda != null && api_key.secret.rotation_enabled
+  }
+
+  # Referencing the initial version ensures the secret value exists before rotation is enabled.
+  secret_id           = aws_secretsmanager_secret_version.this[each.key].secret_id
+  rotation_lambda_arn = startswith(var.settings.rotation_lambda, "arn:") ? var.settings.rotation_lambda : data.aws_lambda_function.rotation[0].arn
+
+  rotation_rules {
+    automatically_after_days = each.value.secret.rotation_period_days
+  }
+
+  depends_on = [aws_secretsmanager_secret_version.this]
+}

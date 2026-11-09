@@ -1,5 +1,7 @@
 # Module configuration
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
+#   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; omit to disable rotation for all keys. ARN example: arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key
+#   # Bare names use the configured AWS provider account/Region; full ARNs pass through, including any qualifier.
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -21,4 +23,6 @@
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
 #             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
+#             rotation_enabled: false     # (Optional) Opt out of module-wide rotation; default true. NOT RECOMMENDED
+#             rotation_period_days: 30    # (Optional) Rotation interval in whole days, 1-1000. Default: 30; used when rotation is enabled
 settings: {}

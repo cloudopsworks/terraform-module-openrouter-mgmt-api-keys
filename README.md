@@ -3,8 +3,7 @@
   ** 
   ** This file was automatically generated. 
   ** 1) Make all changes to `README.yaml` 
-  ** 2) Run `make init` (you only need to do this once)
-  ** 3) Run`make readme` to rebuild this file. 
+  ** 2) Run `tronador readme build` to rebuild this file.
   -->
 [![README Header][readme_header_img]][readme_header_link]
 
@@ -62,6 +61,9 @@ credentials in AWS Secrets Manager.
    BYOK accounting, expiration, and creator assignment.
 4. **Persists secrets in AWS Secrets Manager** either as plain strings or as JSON objects
    in the form `{"api_key":"<value>"}`.
+5. **Optionally schedules secret rotation** for every key when the module-wide
+   `settings.rotation_lambda` is set to a Lambda name or ARN. Each key can set `secret.rotation_period_days`
+   (default: 30 days). Per-key opt-out is available but not recommended.
 
 When no workspace selector is set for an entry, the module passes `null` through for
 `workspace_id` exactly as configured.
@@ -84,6 +86,31 @@ overridden per API key with `secret.path`.
 |---------|-------------|
 | `false` (default) | `{"api_key": "or-..."}` |
 | `true` | `or-...` |
+
+### Rotation prerequisites
+
+This module configures the Secrets Manager rotation schedule only; it does not create a
+Lambda function, replace an OpenRouter API key, or implement rotation logic. Supply an
+existing rotation Lambda that can replace the OpenRouter key and write the new value in
+the same plain-string or JSON format selected by `secret.plain`. Grant Secrets Manager
+permission to invoke the Lambda, and give the Lambda execution role the required
+Secrets Manager, OpenRouter, and (if applicable) KMS access. Omitting the module-wide
+`settings.rotation_lambda` disables rotation for all keys. Supply an existing Lambda
+name or ARN to enable rotation for every key unless that key sets
+`secret.rotation_enabled = false`. A name is resolved through a Lambda data lookup,
+so the Terraform caller needs Lambda read permissions; an ARN bypasses that lookup.
+Bare names resolve in the configured AWS provider account and Region to an unqualified
+function ARN. Full ARNs pass through unchanged, including an alias or version qualifier.
+**Per-key opt-out is not recommended** because it leaves that credential unrotated.
+When rotation is configured, the AWS provider enables it immediately by default,
+so Secrets Manager may invoke the Lambda during the first apply; ensure the Lambda
+and permissions are ready for every participating key.
+
+Terraform still owns the original OpenRouter API key and initial secret version. If the
+rotation Lambda revokes or deletes that key, a later apply may recreate the key and its
+secret version. Replacement keys created by the Lambda are not automatically adopted
+into Terraform state, and module outputs continue to describe the Terraform-managed
+key. Coordinate key ownership and drift handling before enabling external rotation.
 
 ## Usage
 
@@ -114,6 +141,8 @@ terragrunt apply
 ```yaml
 # Module configuration
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
+#   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; omit to disable rotation for all keys. ARN example: arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key
+#   # Bare names use the configured AWS provider account/Region; full ARNs pass through, including any qualifier.
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -135,6 +164,8 @@ terragrunt apply
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
 #             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
+#             rotation_enabled: false     # (Optional) Opt out of module-wide rotation; default true. NOT RECOMMENDED
+#             rotation_period_days: 30    # (Optional) Rotation interval in whole days, 1-1000. Default: 30; used when rotation is enabled
 settings:
   workspaces:
     engineering:
@@ -216,6 +247,7 @@ inputs = {
 | `org.environment_name` | `string` | yes | Environment name such as `prod` or `stg` |
 | `spoke_def` | `string` | no | Three-digit spoke identifier. Default: `"001"` |
 | `extra_tags` | `map(string)` | no | Additional tags merged onto all AWS secrets |
+| `settings.rotation_lambda` | `string` | no | Existing module-wide rotation Lambda name or ARN; omit to disable rotation for all keys |
 | `settings.workspaces` | `map(object)` | no | Map of OpenRouter workspaces keyed by logical name |
 
 ### `settings.workspaces.<key>`
@@ -246,6 +278,8 @@ inputs = {
 | `secret.path` | `string` | no | Secret path prefix. Default: `/<org_unit>/<env_name>/<env_type>/<workspace_key>` |
 | `secret.plain` | `bool` | no | Store plain string instead of JSON. Default: `false` |
 | `secret.description` | `string` | no | Human-readable description for the AWS secret |
+| `secret.rotation_enabled` | `bool` | no | Default `true`. Set `false` to opt out of module-wide rotation; **not recommended** |
+| `secret.rotation_period_days` | `number` | no | Rotation interval in whole days, 1–1000; default `30`. Used when rotation is enabled |
 
 \* Exactly one of `name_prefix` or `name` must be provided.
 
@@ -343,6 +377,48 @@ inputs = {
 }
 ```
 
+## Module-wide Secrets Manager rotation
+
+The Lambda must already exist and have the permissions described under **Rotation prerequisites**.
+Supplying one `settings.rotation_lambda` name or ARN enables rotation for every key. Set
+`secret.rotation_enabled = false` only for an exceptional opt-out; this is **not recommended**.
+Setting a period alone does not enable rotation.
+
+```hcl
+inputs = {
+  org = {
+    organization_name = "acme"
+    organization_unit = "platform"
+    environment_type  = "production"
+    environment_name  = "prod"
+  }
+
+  settings = {
+    # Alternatively use the function name "rotate-openrouter-key" for an AWS Lambda lookup.
+    rotation_lambda = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key"
+    workspaces = {
+      engineering = {
+        workspace_id = "ws_1234567890"
+        api_keys = {
+          backend = {
+            name = "backend-openrouter"
+            secret = {
+              rotation_period_days = 45
+            }
+          }
+          exceptional_key = {
+            name = "exceptional-openrouter-key"
+            secret = {
+              rotation_enabled = false # Opt out only when strictly necessary; not recommended.
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 
 
 ## Makefile Targets
@@ -360,7 +436,7 @@ Available targets:
 ## Requirements
 
 | Name | Version |
-|------|---------|
+| ---- | ------- |
 | <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.3 |
 | <a name="requirement_aws"></a> [aws](#requirement\_aws) | ~> 6.35 |
 | <a name="requirement_openrouter"></a> [openrouter](#requirement\_openrouter) | ~> 0.1 |
@@ -368,40 +444,42 @@ Available targets:
 ## Providers
 
 | Name | Version |
-|------|---------|
-| <a name="provider_aws"></a> [aws](#provider\_aws) | ~> 6.35 |
-| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | ~> 0.1 |
+| ---- | ------- |
+| <a name="provider_aws"></a> [aws](#provider\_aws) | 6.72.0 |
+| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | 0.4.0 |
 
 ## Modules
 
 | Name | Source | Version |
-|------|--------|---------|
+| ---- | ------ | ------- |
 | <a name="module_tags"></a> [tags](#module\_tags) | cloudopsworks/tags/local | 1.0.10 |
 
 ## Resources
 
 | Name | Type |
-|------|------|
+| ---- | ---- |
 | [aws_secretsmanager_secret.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret) | resource |
+| [aws_secretsmanager_secret_rotation.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_rotation) | resource |
 | [aws_secretsmanager_secret_version.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
 | [openrouter_api_key.this](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest/docs/resources/api_key) | resource |
+| [aws_lambda_function.rotation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/lambda_function) | data source |
 | [aws_region.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
 | [openrouter_workspaces.lookup](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest/docs/data-sources/workspaces) | data source |
 
 ## Inputs
 
 | Name | Description | Type | Default | Required |
-|------|-------------|------|---------|:--------:|
+| ---- | ----------- | ---- | ------- | :------: |
 | <a name="input_extra_tags"></a> [extra\_tags](#input\_extra\_tags) | Extra tags to add to the resources | `map(string)` | `{}` | no |
 | <a name="input_is_hub"></a> [is\_hub](#input\_is\_hub) | Is this a hub or spoke configuration? | `bool` | `false` | no |
 | <a name="input_org"></a> [org](#input\_org) | Organization details | <pre>object({<br/>    organization_name = string<br/>    organization_unit = string<br/>    environment_type  = string<br/>    environment_name  = string<br/>  })</pre> | n/a | yes |
-| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    workspaces = optional(map(object({<br/>      workspace_id   = optional(string)<br/>      workspace_name = optional(string)<br/>      workspace_slug = optional(string)<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix = optional(string)<br/>          name        = optional(string)<br/>          path        = optional(string)<br/>          plain       = optional(bool, false)<br/>          description = optional(string)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
+| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    rotation_lambda = optional(string)<br/>    workspaces = optional(map(object({<br/>      workspace_id   = optional(string)<br/>      workspace_name = optional(string)<br/>      workspace_slug = optional(string)<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix          = optional(string)<br/>          name                 = optional(string)<br/>          path                 = optional(string)<br/>          plain                = optional(bool, false)<br/>          description          = optional(string)<br/>          rotation_enabled     = optional(bool, true)<br/>          rotation_period_days = optional(number, 30)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
 | <a name="input_spoke_def"></a> [spoke\_def](#input\_spoke\_def) | Spoke ID Number, must be a 3 digit number | `string` | `"001"` | no |
 
 ## Outputs
 
 | Name | Description |
-|------|-------------|
+| ---- | ----------- |
 | <a name="output_api_key_ids"></a> [api\_key\_ids](#output\_api\_key\_ids) | Map of OpenRouter API key IDs keyed by '<workspace\_key>/<api\_key\_key>' |
 | <a name="output_api_key_labels"></a> [api\_key\_labels](#output\_api\_key\_labels) | Map of server-generated OpenRouter API key labels keyed by '<workspace\_key>/<api\_key\_key>' |
 | <a name="output_secret_arns"></a> [secret\_arns](#output\_secret\_arns) | Map of AWS Secrets Manager secret ARNs holding OpenRouter API keys, keyed by '<workspace\_key>/<api\_key\_key>' |
