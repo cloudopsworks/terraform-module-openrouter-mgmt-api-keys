@@ -18,17 +18,22 @@ locals {
   provider_workspaces = try(data.openrouter_workspaces.lookup[0].items, [])
 
   workspace_ids = {
-    for workspace_key, workspace in try(var.settings.workspaces, {}) : workspace_key => coalesce(
-      try(workspace.workspace_id, null),
-      try(one([
-        for candidate in local.provider_workspaces : candidate.id
-        if try(workspace.workspace_name, null) != null && candidate.name == try(workspace.workspace_name, "")
-      ]), null),
-      try(one([
-        for candidate in local.provider_workspaces : candidate.id
-        if try(workspace.workspace_slug, null) != null && candidate.slug == try(workspace.workspace_slug, "")
-      ]), null),
-      null
+    for workspace_key, workspace in try(var.settings.workspaces, {}) : workspace_key => (
+      try(workspace.workspace_id, null) == null &&
+      try(workspace.workspace_name, null) == null &&
+      try(workspace.workspace_slug, null) == null
+      ? null : coalesce(
+        try(workspace.workspace_id, null),
+        try(one([
+          for candidate in local.provider_workspaces : candidate.id
+          if try(workspace.workspace_name, null) != null && candidate.name == try(workspace.workspace_name, "")
+        ]), null),
+        try(one([
+          for candidate in local.provider_workspaces : candidate.id
+          if try(workspace.workspace_slug, null) != null && candidate.slug == try(workspace.workspace_slug, "")
+        ]), null),
+        null
+      )
     )
   }
 

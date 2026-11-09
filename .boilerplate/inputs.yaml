@@ -22,7 +22,7 @@
 #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name
 #             name: "fixed-secret"       # (Optional) Fixed secret name (mutually exclusive with secret.name_prefix)
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
-#             plain: false                # (Optional) Store raw API key only; default false stores JSON with api_key and api_key_id. Plain is invalid for rotating keys.
+#             plain: false                # (Optional) Store raw API key only; default false stores JSON with api_key, api_key_id, and workspace_id. Plain is invalid for rotating keys.
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
 #             rotation_enabled: false     # (Optional) Opt out of module-wide rotation; default true. NOT RECOMMENDED
 settings: {}

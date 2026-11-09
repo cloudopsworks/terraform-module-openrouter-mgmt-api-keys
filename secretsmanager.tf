@@ -26,8 +26,9 @@ resource "aws_secretsmanager_secret_version" "this" {
     openrouter_api_key.this[each.key].key
     ) : (
     jsonencode({
-      api_key    = openrouter_api_key.this[each.key].key
-      api_key_id = openrouter_api_key.this[each.key].id
+      api_key      = openrouter_api_key.this[each.key].key
+      api_key_id   = openrouter_api_key.this[each.key].id
+      workspace_id = openrouter_api_key.this[each.key].workspace_id
     })
   )
 }

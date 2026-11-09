@@ -29,7 +29,7 @@
 #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name
 #             name: "fixed-secret"       # (Optional) Fixed secret name (mutually exclusive with secret.name_prefix)
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
-#             plain: false                # (Optional) Store only the API key as a plain string; default false stores JSON with api_key and api_key_id. Plain mode is incompatible with enabled rotation
+#             plain: false                # (Optional) Store only the API key as a plain string; default false stores JSON with api_key, api_key_id, and workspace_id. Plain mode is incompatible with enabled rotation
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
 #             rotation_enabled: true      # (Optional) Include this key in module-wide rotation. Default: true; false opts out (not recommended)
 variable "settings" {
@@ -72,6 +72,15 @@ variable "settings" {
       ])) <= 1
     ])
     error_message = "Each settings.workspaces.<workspace> entry may set at most one of workspace_id, workspace_name, or workspace_slug."
+  }
+
+  validation {
+    condition = alltrue([
+      for workspace in values(try(var.settings.workspaces, {})) : (
+        try(workspace.workspace_id, null) == null || trimspace(workspace.workspace_id) != ""
+      )
+    ])
+    error_message = "Each explicitly set settings.workspaces.<workspace>.workspace_id must be nonempty."
   }
 
   validation {
@@ -163,6 +172,6 @@ variable "settings" {
         )
       ]
     ]))
-    error_message = "Each key enrolled in rotation must use JSON secret storage (secret.plain = false) so the Lambda receives both api_key and api_key_id."
+    error_message = "Each key enrolled in rotation must use JSON secret storage (secret.plain = false) so the Lambda receives api_key, api_key_id, and workspace_id."
   }
 }

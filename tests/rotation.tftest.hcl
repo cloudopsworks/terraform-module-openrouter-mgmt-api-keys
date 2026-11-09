@@ -177,18 +177,23 @@ run "rotation_opt_out_is_per_key" {
   }
 }
 
-run "json_secret_pairs_each_key_with_its_id" {
+run "json_secret_pairs_each_key_with_its_workspace" {
   command = apply
 
   variables {
     settings = {
       workspaces = {
         engineering = {
-          workspace_id = "ws_example"
+          workspace_id = "ws_engineering"
           api_keys = {
             backend = {
               name = "backend"
             }
+          }
+        }
+        shared = {
+          workspace_id = "ws_shared"
+          api_keys = {
             reporting = {
               name = "reporting"
             }
@@ -200,14 +205,66 @@ run "json_secret_pairs_each_key_with_its_id" {
 
   assert {
     condition = alltrue([
-      for key in ["engineering/backend", "engineering/reporting"] : (
-        length(keys(jsondecode(aws_secretsmanager_secret_version.this[key].secret_string))) == 2 &&
+      for key in ["engineering/backend", "shared/reporting"] : (
+        length(keys(jsondecode(aws_secretsmanager_secret_version.this[key].secret_string))) == 3 &&
         jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key == openrouter_api_key.this[key].key &&
-        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key_id == openrouter_api_key.this[key].id
+        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key_id == openrouter_api_key.this[key].id &&
+        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).workspace_id == openrouter_api_key.this[key].workspace_id
       )
-    ])
-    error_message = "Each JSON secret must pair its own API key and OpenRouter key ID."
+      ]) && (
+      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).workspace_id == "ws_engineering" &&
+      jsondecode(aws_secretsmanager_secret_version.this["shared/reporting"].secret_string).workspace_id == "ws_shared"
+    )
+    error_message = "Each JSON secret must pair its own API key, OpenRouter key ID, and workspace ID."
   }
+}
+
+run "json_secret_tracks_provider_default_workspace" {
+  command = apply
+
+  variables {
+    settings = {
+      workspaces = {
+        default = {
+          api_keys = {
+            backend = {
+              name = "backend"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      local.workspace_ids["default"] == null &&
+      openrouter_api_key.this["default/backend"].workspace_id != null &&
+      openrouter_api_key.this["default/backend"].workspace_id == jsondecode(aws_secretsmanager_secret_version.this["default/backend"].secret_string).workspace_id
+    )
+    error_message = "A key without a workspace selector must store the provider-returned workspace ID."
+  }
+}
+
+run "empty_explicit_workspace_id_is_rejected" {
+  command = plan
+
+  variables {
+    settings = {
+      workspaces = {
+        engineering = {
+          workspace_id = ""
+          api_keys = {
+            backend = {
+              name = "backend"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.settings]
 }
 
 run "plain_secret_stays_raw_without_rotation" {
