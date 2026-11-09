@@ -29,7 +29,7 @@
 #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name
 #             name: "fixed-secret"       # (Optional) Fixed secret name (mutually exclusive with secret.name_prefix)
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
-#             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
+#             plain: false                # (Optional) Store only the API key as a plain string; default false stores JSON with api_key and api_key_id. Plain mode is incompatible with enabled rotation
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
 #             rotation_enabled: true      # (Optional) Include this key in module-wide rotation. Default: true; false opts out (not recommended)
 variable "settings" {
@@ -153,5 +153,16 @@ variable "settings" {
       var.settings.rotation_period_days == floor(var.settings.rotation_period_days)
     )
     error_message = "settings.rotation_period_days must be a whole number from 1 through 1000."
+  }
+
+  validation {
+    condition = var.settings.rotation_lambda == null ? true : alltrue(flatten([
+      for workspace in values(var.settings.workspaces) : [
+        for api_key in values(workspace.api_keys) : !(
+          api_key.secret.rotation_enabled && api_key.secret.plain
+        )
+      ]
+    ]))
+    error_message = "Each key enrolled in rotation must use JSON secret storage (secret.plain = false) so the Lambda receives both api_key and api_key_id."
   }
 }

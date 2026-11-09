@@ -60,7 +60,7 @@ credentials in AWS Secrets Manager.
 3. **Supports per-key controls** such as spend limits, reset windows, disabled state,
    BYOK accounting, expiration, and creator assignment.
 4. **Persists secrets in AWS Secrets Manager** either as plain strings or as JSON objects
-   in the form `{"api_key":"<value>"}`.
+   containing the credential (`api_key`) and OpenRouter key hash (`api_key_id`).
 5. **Optionally schedules secret rotation** for every key when the module-wide
    `settings.rotation_lambda` is set to a Lambda name or ARN. Set the shared interval with
    `settings.rotation_period_days` (default: 30 days). Per-key opt-out is available but not recommended.
@@ -84,15 +84,28 @@ overridden per API key with `secret.path`.
 
 | `plain` | Stored value |
 |---------|-------------|
-| `false` (default) | `{"api_key": "or-..."}` |
-| `true` | `or-...` |
+| `false` (default) | `{"api_key":"<value>","api_key_id":"<key hash>"}` |
+| `true` | Raw API key only; allowed only when rotation is disabled or this key opts out |
+
+Adding `api_key_id` creates a new secret version for existing JSON-mode secrets when
+applied. JSON consumers that reject unknown fields must accept the added field before
+upgrade. Plain-string secrets keep their existing value format.
+
+**Migration warning:** For an already-rotated JSON secret, applying the changed
+`secret_string` writes a new version and moves `AWSCURRENT` to Terraform's original-key
+payload. Consumers can switch from the Lambda-rotated credential to a stale or
+disabled original key. Back up the current version, coordinate and reconcile key
+ownership with the rotation Lambda and consumers before upgrading, and test in a
+nonproduction environment first. Adding `api_key_id` does not resolve drift between
+Terraform-managed and Lambda-managed keys.
 
 ### Rotation prerequisites
 
 This module configures the Secrets Manager rotation schedule only; it does not create a
 Lambda function, replace an OpenRouter API key, or implement rotation logic. Supply an
-existing rotation Lambda that can replace the OpenRouter key and write the new value in
-the same plain-string or JSON format selected by `secret.plain`. Grant Secrets Manager
+existing rotation Lambda that can replace the OpenRouter key. It must write the new
+`api_key` and matching `api_key_id` into the same `AWSPENDING` JSON secret version,
+validate the pair, then promote it to `AWSCURRENT`. Grant Secrets Manager
 permission to invoke the Lambda, and give the Lambda execution role the required
 Secrets Manager, OpenRouter, and (if applicable) KMS access. Omitting the module-wide
 `settings.rotation_lambda` disables rotation for all keys. Supply an existing Lambda
@@ -102,6 +115,9 @@ so the Terraform caller needs Lambda read permissions; an ARN bypasses that look
 Bare names resolve in the configured AWS provider account and Region to an unqualified
 function ARN. Full ARNs pass through unchanged, including an alias or version qualifier.
 **Per-key opt-out is not recommended** because it leaves that credential unrotated.
+`secret.plain = true` is invalid for a key participating in rotation because a raw
+string cannot carry the required key ID. Plain mode remains valid without a global
+rotation Lambda or when that key opts out.
 When rotation is configured, the AWS provider enables it immediately by default,
 so Secrets Manager may invoke the Lambda during the first apply; ensure the Lambda
 and permissions are ready for every participating key.
@@ -163,7 +179,7 @@ terragrunt apply
 #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name
 #             name: "fixed-secret"       # (Optional) Fixed secret name (mutually exclusive with secret.name_prefix)
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
-#             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
+#             plain: false                # (Optional) Store raw API key only; default false stores JSON with api_key and api_key_id. Plain is invalid for rotating keys.
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
 #             rotation_enabled: false     # (Optional) Opt out of module-wide rotation; default true. NOT RECOMMENDED
 settings:
@@ -277,7 +293,7 @@ inputs = {
 | `secret.name_prefix` | `string` | no | Secret name prefix composed as `name_prefix-<system_name>` |
 | `secret.name` | `string` | no | Fixed secret name |
 | `secret.path` | `string` | no | Secret path prefix. Default: `/<org_unit>/<env_name>/<env_type>/<workspace_key>` |
-| `secret.plain` | `bool` | no | Store plain string instead of JSON. Default: `false` |
+| `secret.plain` | `bool` | no | Store raw API key instead of JSON with `api_key` and `api_key_id`. Default: `false`; `true` is invalid when this key participates in rotation |
 | `secret.description` | `string` | no | Human-readable description for the AWS secret |
 | `secret.rotation_enabled` | `bool` | no | Default `true`. Set `false` to opt out of module-wide rotation; **not recommended** |
 
