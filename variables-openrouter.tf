@@ -9,6 +9,7 @@
 
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
 #   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide rotation Lambda name or ARN; omit to disable rotation for every key
+#   rotation_period_days: 30             # (Optional) Module-wide rotation interval in whole days, 1-1000. Default: 30
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -31,11 +32,11 @@
 #             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
 #             rotation_enabled: true      # (Optional) Include this key in module-wide rotation. Default: true; false opts out (not recommended)
-#             rotation_period_days: 30    # (Optional) Rotation interval in whole days, 1-1000. Default: 30; used only when module-wide rotation is configured
 variable "settings" {
   description = "Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence"
   type = object({
-    rotation_lambda = optional(string)
+    rotation_lambda      = optional(string)
+    rotation_period_days = optional(number, 30)
     workspaces = optional(map(object({
       workspace_id   = optional(string)
       workspace_name = optional(string)
@@ -50,13 +51,12 @@ variable "settings" {
         expires_at            = optional(string)
         creator_user_id       = optional(string)
         secret = optional(object({
-          name_prefix          = optional(string)
-          name                 = optional(string)
-          path                 = optional(string)
-          plain                = optional(bool, false)
-          description          = optional(string)
-          rotation_enabled     = optional(bool, true)
-          rotation_period_days = optional(number, 30)
+          name_prefix      = optional(string)
+          name             = optional(string)
+          path             = optional(string)
+          plain            = optional(bool, false)
+          description      = optional(string)
+          rotation_enabled = optional(bool, true)
         }), {})
       })), {})
     })), {})
@@ -147,15 +147,11 @@ variable "settings" {
   }
 
   validation {
-    condition = alltrue(flatten([
-      for workspace in values(try(var.settings.workspaces, {})) : [
-        for api_key in values(try(workspace.api_keys, {})) : (
-          api_key.secret.rotation_period_days >= 1 &&
-          api_key.secret.rotation_period_days <= 1000 &&
-          api_key.secret.rotation_period_days == floor(api_key.secret.rotation_period_days)
-        )
-      ]
-    ]))
-    error_message = "Each secret.rotation_period_days must be a whole number from 1 through 1000."
+    condition = (
+      var.settings.rotation_period_days >= 1 &&
+      var.settings.rotation_period_days <= 1000 &&
+      var.settings.rotation_period_days == floor(var.settings.rotation_period_days)
+    )
+    error_message = "settings.rotation_period_days must be a whole number from 1 through 1000."
   }
 }

@@ -28,15 +28,13 @@ run "rotation_disabled_without_lambda" {
 
   variables {
     settings = {
+      rotation_period_days = 60
       workspaces = {
         engineering = {
           workspace_id = "ws_example"
           api_keys = {
             backend = {
               name = "backend"
-              secret = {
-                rotation_period_days = 60
-              }
             }
             reporting = {
               name = "reporting"
@@ -58,16 +56,14 @@ run "rotation_uses_configured_period" {
 
   variables {
     settings = {
-      rotation_lambda = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
+      rotation_lambda      = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
+      rotation_period_days = 45
       workspaces = {
         engineering = {
           workspace_id = "ws_example"
           api_keys = {
             backend = {
               name = "backend"
-              secret = {
-                rotation_period_days = 45
-              }
             }
             reporting = {
               name = "reporting"
@@ -83,11 +79,11 @@ run "rotation_uses_configured_period" {
       length(aws_secretsmanager_secret_rotation.this) == 2 &&
       length(data.aws_lambda_function.rotation) == 0 &&
       aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].automatically_after_days == 45 &&
-      aws_secretsmanager_secret_rotation.this["engineering/reporting"].rotation_rules[0].automatically_after_days == 30 &&
+      aws_secretsmanager_secret_rotation.this["engineering/reporting"].rotation_rules[0].automatically_after_days == 45 &&
       aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_lambda_arn == "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter" &&
       aws_secretsmanager_secret_rotation.this["engineering/reporting"].rotation_lambda_arn == "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
     )
-    error_message = "A module-wide Lambda must rotate every key with each key's configured interval."
+    error_message = "A module-wide Lambda must rotate every key with the same configured interval."
   }
 }
 
@@ -186,16 +182,14 @@ run "invalid_period_is_rejected" {
 
   variables {
     settings = {
-      rotation_lambda = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
+      rotation_lambda      = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
+      rotation_period_days = 0
       workspaces = {
         engineering = {
           workspace_id = "ws_example"
           api_keys = {
             backend = {
               name = "backend"
-              secret = {
-                rotation_period_days = 0
-              }
             }
           }
         }
@@ -211,15 +205,35 @@ run "fractional_period_is_rejected" {
 
   variables {
     settings = {
+      rotation_period_days = 1.5
       workspaces = {
         engineering = {
           workspace_id = "ws_example"
           api_keys = {
             backend = {
               name = "backend"
-              secret = {
-                rotation_period_days = 1.5
-              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.settings]
+}
+
+run "period_above_limit_is_rejected" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_period_days = 1001
+      workspaces = {
+        engineering = {
+          workspace_id = "ws_example"
+          api_keys = {
+            backend = {
+              name = "backend"
             }
           }
         }

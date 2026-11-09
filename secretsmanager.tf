@@ -46,7 +46,7 @@ resource "aws_secretsmanager_secret_rotation" "this" {
   rotation_lambda_arn = startswith(var.settings.rotation_lambda, "arn:") ? var.settings.rotation_lambda : data.aws_lambda_function.rotation[0].arn
 
   rotation_rules {
-    automatically_after_days = each.value.secret.rotation_period_days
+    automatically_after_days = var.settings.rotation_period_days
   }
 
   depends_on = [aws_secretsmanager_secret_version.this]

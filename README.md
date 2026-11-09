@@ -62,8 +62,8 @@ credentials in AWS Secrets Manager.
 4. **Persists secrets in AWS Secrets Manager** either as plain strings or as JSON objects
    in the form `{"api_key":"<value>"}`.
 5. **Optionally schedules secret rotation** for every key when the module-wide
-   `settings.rotation_lambda` is set to a Lambda name or ARN. Each key can set `secret.rotation_period_days`
-   (default: 30 days). Per-key opt-out is available but not recommended.
+   `settings.rotation_lambda` is set to a Lambda name or ARN. Set the shared interval with
+   `settings.rotation_period_days` (default: 30 days). Per-key opt-out is available but not recommended.
 
 When no workspace selector is set for an entry, the module passes `null` through for
 `workspace_id` exactly as configured.
@@ -143,6 +143,7 @@ terragrunt apply
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
 #   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; omit to disable rotation for all keys. ARN example: arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key
 #   # Bare names use the configured AWS provider account/Region; full ARNs pass through, including any qualifier.
+#   rotation_period_days: 30            # (Optional) Module-wide rotation interval in whole days, 1-1000. Default: 30; used when rotation is enabled
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -165,7 +166,6 @@ terragrunt apply
 #             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
 #             rotation_enabled: false     # (Optional) Opt out of module-wide rotation; default true. NOT RECOMMENDED
-#             rotation_period_days: 30    # (Optional) Rotation interval in whole days, 1-1000. Default: 30; used when rotation is enabled
 settings:
   workspaces:
     engineering:
@@ -248,6 +248,7 @@ inputs = {
 | `spoke_def` | `string` | no | Three-digit spoke identifier. Default: `"001"` |
 | `extra_tags` | `map(string)` | no | Additional tags merged onto all AWS secrets |
 | `settings.rotation_lambda` | `string` | no | Existing module-wide rotation Lambda name or ARN; omit to disable rotation for all keys |
+| `settings.rotation_period_days` | `number` | no | Shared rotation interval in whole days, 1–1000; default `30`. Used when rotation is enabled |
 | `settings.workspaces` | `map(object)` | no | Map of OpenRouter workspaces keyed by logical name |
 
 ### `settings.workspaces.<key>`
@@ -279,7 +280,6 @@ inputs = {
 | `secret.plain` | `bool` | no | Store plain string instead of JSON. Default: `false` |
 | `secret.description` | `string` | no | Human-readable description for the AWS secret |
 | `secret.rotation_enabled` | `bool` | no | Default `true`. Set `false` to opt out of module-wide rotation; **not recommended** |
-| `secret.rotation_period_days` | `number` | no | Rotation interval in whole days, 1–1000; default `30`. Used when rotation is enabled |
 
 \* Exactly one of `name_prefix` or `name` must be provided.
 
@@ -380,8 +380,9 @@ inputs = {
 ## Module-wide Secrets Manager rotation
 
 The Lambda must already exist and have the permissions described under **Rotation prerequisites**.
-Supplying one `settings.rotation_lambda` name or ARN enables rotation for every key. Set
-`secret.rotation_enabled = false` only for an exceptional opt-out; this is **not recommended**.
+Supplying one `settings.rotation_lambda` name or ARN enables rotation for every key at
+the shared `settings.rotation_period_days` interval. Set `secret.rotation_enabled = false`
+only for an exceptional opt-out; this is **not recommended**.
 Setting a period alone does not enable rotation.
 
 ```hcl
@@ -396,15 +397,13 @@ inputs = {
   settings = {
     # Alternatively use the function name "rotate-openrouter-key" for an AWS Lambda lookup.
     rotation_lambda = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key"
+    rotation_period_days = 45
     workspaces = {
       engineering = {
         workspace_id = "ws_1234567890"
         api_keys = {
           backend = {
             name = "backend-openrouter"
-            secret = {
-              rotation_period_days = 45
-            }
           }
           exceptional_key = {
             name = "exceptional-openrouter-key"
@@ -473,7 +472,7 @@ Available targets:
 | <a name="input_extra_tags"></a> [extra\_tags](#input\_extra\_tags) | Extra tags to add to the resources | `map(string)` | `{}` | no |
 | <a name="input_is_hub"></a> [is\_hub](#input\_is\_hub) | Is this a hub or spoke configuration? | `bool` | `false` | no |
 | <a name="input_org"></a> [org](#input\_org) | Organization details | <pre>object({<br/>    organization_name = string<br/>    organization_unit = string<br/>    environment_type  = string<br/>    environment_name  = string<br/>  })</pre> | n/a | yes |
-| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    rotation_lambda = optional(string)<br/>    workspaces = optional(map(object({<br/>      workspace_id   = optional(string)<br/>      workspace_name = optional(string)<br/>      workspace_slug = optional(string)<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix          = optional(string)<br/>          name                 = optional(string)<br/>          path                 = optional(string)<br/>          plain                = optional(bool, false)<br/>          description          = optional(string)<br/>          rotation_enabled     = optional(bool, true)<br/>          rotation_period_days = optional(number, 30)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
+| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    rotation_lambda      = optional(string)<br/>    rotation_period_days = optional(number, 30)<br/>    workspaces = optional(map(object({<br/>      workspace_id   = optional(string)<br/>      workspace_name = optional(string)<br/>      workspace_slug = optional(string)<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix      = optional(string)<br/>          name             = optional(string)<br/>          path             = optional(string)<br/>          plain            = optional(bool, false)<br/>          description      = optional(string)<br/>          rotation_enabled = optional(bool, true)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
 | <a name="input_spoke_def"></a> [spoke\_def](#input\_spoke\_def) | Spoke ID Number, must be a 3 digit number | `string` | `"001"` | no |
 
 ## Outputs
