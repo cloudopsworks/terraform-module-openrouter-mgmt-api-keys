@@ -8,7 +8,7 @@
 #
 
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
-#   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide rotation Lambda name or ARN; omit to disable rotation for every key
+#   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; when set, Lambda owns creation and rotation of enrolled OpenRouter keys
 #   rotation_period_days: 30             # (Optional) Module-wide rotation interval in whole days, 1-1000. Default: 30
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
@@ -22,7 +22,7 @@
 #           limit: 250                    # (Optional) Spending limit in USD
 #           limit_reset: "monthly"       # (Optional) Reset interval. Valid values: daily, weekly, monthly
 #           include_byok_in_limit: true   # (Optional) Whether BYOK usage counts toward the limit
-#           disabled: false               # (Optional) Whether the key is disabled. Default: provider default
+#           disabled: false               # (Optional) Whether the key is disabled. Default: provider/API default; rotation Lambda applies it via PATCH after Create
 #           expires_at: "2026-12-31T23:59:59Z" # (Optional) UTC ISO-8601 expiration timestamp
 #           creator_user_id: "user_123"  # (Optional) OpenRouter organization member ID to set as creator
 #           secret:                       # (Optional) AWS Secrets Manager configuration for storing the API key
@@ -31,7 +31,7 @@
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
 #             plain: false                # (Optional, deprecated) Must remain false; every secret stores JSON with api_key, api_key_id, name, and workspace_id, even without rotation
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
-#             rotation_enabled: true      # (Optional) Include this key in module-wide rotation. Default: true; false opts out (not recommended)
+#             rotation_enabled: true      # (Optional) Let the module-wide Lambda own this key's lifecycle. Default: true; false opts out (not recommended)
 variable "settings" {
   description = "Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence"
   type = object({

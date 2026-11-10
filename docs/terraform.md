@@ -26,6 +26,7 @@
 | [aws_secretsmanager_secret.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret) | resource |
 | [aws_secretsmanager_secret_rotation.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_rotation) | resource |
 | [aws_secretsmanager_secret_version.non_rotating](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
+| [aws_secretsmanager_secret_version.rotation_config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
 | [aws_secretsmanager_secret_version.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
 | [openrouter_api_key.this](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest/docs/resources/api_key) | resource |
 | [aws_lambda_function.rotation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/lambda_function) | data source |
@@ -46,7 +47,9 @@
 
 | Name | Description |
 | ---- | ----------- |
-| <a name="output_api_key_ids"></a> [api\_key\_ids](#output\_api\_key\_ids) | Map of OpenRouter API key IDs keyed by '<workspace\_key>/<api\_key\_key>' |
-| <a name="output_api_key_labels"></a> [api\_key\_labels](#output\_api\_key\_labels) | Map of server-generated OpenRouter API key labels keyed by '<workspace\_key>/<api\_key\_key>' |
+| <a name="output_api_key_ids"></a> [api\_key\_ids](#output\_api\_key\_ids) | Map of Terraform-managed nonrotating OpenRouter API key IDs keyed by '<workspace\_key>/<api\_key\_key>'; rotating key IDs are Lambda-owned |
+| <a name="output_api_key_labels"></a> [api\_key\_labels](#output\_api\_key\_labels) | Map of Terraform-managed nonrotating OpenRouter API key labels keyed by '<workspace\_key>/<api\_key\_key>'; rotating key labels are Lambda-owned |
+| <a name="output_rotation_config_version_ids"></a> [rotation\_config\_version\_ids](#output\_rotation\_config\_version\_ids) | Map of Terraform-managed TFCONFIG secret version IDs for rotating keys, keyed by '<workspace\_key>/<api\_key\_key>' |
+| <a name="output_rotation_secret_arns"></a> [rotation\_secret\_arns](#output\_rotation\_secret\_arns) | Map of AWS Secrets Manager secret ARNs enrolled in Lambda-owned OpenRouter key rotation, keyed by '<workspace\_key>/<api\_key\_key>' |
 | <a name="output_secret_arns"></a> [secret\_arns](#output\_secret\_arns) | Map of AWS Secrets Manager secret ARNs holding OpenRouter API keys, keyed by '<workspace\_key>/<api\_key\_key>' |
 | <a name="output_secret_names"></a> [secret\_names](#output\_secret\_names) | Map of AWS Secrets Manager secret names holding OpenRouter API keys, keyed by '<workspace\_key>/<api\_key\_key>' |

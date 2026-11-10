@@ -46,7 +46,7 @@ run "rotation_disabled_without_lambda" {
   }
 
   assert {
-    condition     = length(aws_secretsmanager_secret.this) == 2 && length(aws_secretsmanager_secret_version.this) == 0 && length(aws_secretsmanager_secret_version.non_rotating) == 2 && length(aws_secretsmanager_secret_rotation.this) == 0 && length(data.aws_lambda_function.rotation) == 0
+    condition     = length(openrouter_api_key.this) == 2 && length(aws_secretsmanager_secret.this) == 2 && length(aws_secretsmanager_secret_version.this) == 0 && length(aws_secretsmanager_secret_version.rotation_config) == 0 && length(aws_secretsmanager_secret_version.non_rotating) == 2 && length(aws_secretsmanager_secret_rotation.this) == 0 && length(data.aws_lambda_function.rotation) == 0
     error_message = "Without the module-wide Lambda, every key must have a Terraform-updated version and no rotation schedule."
   }
 }
@@ -76,6 +76,8 @@ run "rotation_uses_configured_period" {
 
   assert {
     condition = (
+      length(openrouter_api_key.this) == 0 &&
+      length(aws_secretsmanager_secret_version.rotation_config) == 2 &&
       length(aws_secretsmanager_secret_rotation.this) == 2 &&
       length(data.aws_lambda_function.rotation) == 0 &&
       aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].automatically_after_days == 45 &&
@@ -168,8 +170,10 @@ run "rotation_opt_out_is_per_key" {
 
   assert {
     condition = (
+      length(openrouter_api_key.this) == 1 &&
       length(aws_secretsmanager_secret.this) == 2 &&
       length(aws_secretsmanager_secret_version.this) == 1 &&
+      length(aws_secretsmanager_secret_version.rotation_config) == 1 &&
       length(aws_secretsmanager_secret_version.non_rotating) == 1 &&
       length(aws_secretsmanager_secret_rotation.this) == 1 &&
       contains(keys(aws_secretsmanager_secret_rotation.this), "engineering/reporting") &&
@@ -249,21 +253,105 @@ run "json_secret_tracks_every_key_with_rotation" {
 
   assert {
     condition = (
+      length(openrouter_api_key.this) == 1 &&
+      !contains(keys(openrouter_api_key.this), "engineering/backend") &&
       length(keys(jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string))) == 4 &&
-      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).api_key == openrouter_api_key.this["engineering/backend"].key &&
-      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).api_key_id == openrouter_api_key.this["engineering/backend"].id &&
-      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).name == openrouter_api_key.this["engineering/backend"].name &&
-      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).workspace_id == openrouter_api_key.this["engineering/backend"].workspace_id &&
+      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).api_key == null &&
+      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).api_key_id == "__CREATE_NEW__" &&
+      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).name == "backend" &&
+      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).workspace_id == "ws_engineering" &&
       contains(aws_secretsmanager_secret_version.this["engineering/backend"].version_stages, "TFBOOTSTRAP") &&
+      contains(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].version_stages, "TFCONFIG") &&
+      length(keys(jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string))) == 9 &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).schema_version == 1 &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).name == "backend" &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).workspace_id == "ws_engineering" &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).limit == null &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).disabled == null &&
       length(keys(jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string))) == 4 &&
       jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string).api_key == openrouter_api_key.this["engineering/reporting"].key &&
       jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string).api_key_id == openrouter_api_key.this["engineering/reporting"].id &&
       jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string).name == openrouter_api_key.this["engineering/reporting"].name &&
       jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string).workspace_id == openrouter_api_key.this["engineering/reporting"].workspace_id &&
       length(aws_secretsmanager_secret_rotation.this) == 1 &&
-      contains(keys(aws_secretsmanager_secret_rotation.this), "engineering/backend")
+      contains(keys(aws_secretsmanager_secret_rotation.this), "engineering/backend") &&
+      length(output.api_key_ids) == 1 &&
+      length(output.api_key_labels) == 1 &&
+      length(output.rotation_secret_arns) == 1 &&
+      length(output.rotation_config_version_ids) == 1
     )
-    error_message = "Both rotating and opted-out keys must store all four JSON fields."
+    error_message = "Rotating keys must be Lambda-owned with a bootstrap marker and config stage; opted-out keys remain Terraform-owned."
+  }
+}
+
+run "rotation_config_preserves_all_create_parameters" {
+  command = apply
+
+  variables {
+    settings = {
+      rotation_lambda = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
+      workspaces = {
+        engineering = {
+          workspace_id = "ws_engineering"
+          api_keys = {
+            backend = {
+              name_prefix           = "backend"
+              limit                 = 0
+              limit_reset           = "weekly"
+              include_byok_in_limit = false
+              disabled              = true
+              expires_at            = "2026-12-31T23:59:59Z"
+              creator_user_id       = "user_123"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      length(openrouter_api_key.this) == 0 &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).schema_version == 1 &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).name == local.api_key_names["engineering/backend"] &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).workspace_id == "ws_engineering" &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).limit == 0 &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).limit_reset == "weekly" &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).include_byok_in_limit == false &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).disabled == true &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).expires_at == "2026-12-31T23:59:59Z" &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).creator_user_id == "user_123"
+    )
+    error_message = "TFCONFIG must carry every resolved OpenRouter key parameter, including zero and false."
+  }
+}
+
+run "rotation_seed_allows_provider_default_workspace" {
+  command = apply
+
+  variables {
+    settings = {
+      rotation_lambda = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
+      workspaces = {
+        default = {
+          api_keys = {
+            backend = {
+              name = "backend"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      length(openrouter_api_key.this) == 0 &&
+      jsondecode(aws_secretsmanager_secret_version.this["default/backend"].secret_string).api_key_id == "__CREATE_NEW__" &&
+      jsondecode(aws_secretsmanager_secret_version.this["default/backend"].secret_string).workspace_id == null &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["default/backend"].secret_string).workspace_id == null
+    )
+    error_message = "The Lambda bootstrap and config must preserve an omitted workspace selector as null."
   }
 }
 
