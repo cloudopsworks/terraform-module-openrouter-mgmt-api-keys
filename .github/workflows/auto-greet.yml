@@ -19,6 +19,7 @@ permissions:
 
 jobs:
   comment:
+    name: Post Greeting Comment
     runs-on: ubuntu-latest
     steps:
     - uses: actions/first-interaction@v3

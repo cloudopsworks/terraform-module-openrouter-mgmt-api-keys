@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   assignments:
+    name: Assign Pull Request
     runs-on: ubuntu-latest
     steps:
       - uses: cloudopsworks/auto-assign@v3.0.2

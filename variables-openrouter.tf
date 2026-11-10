@@ -8,6 +8,8 @@
 #
 
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
+#   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; when set, Lambda owns creation and rotation of enrolled OpenRouter keys
+#   rotation_period_days: 30             # (Optional) Module-wide rotation interval in whole days, 1-1000. Default: 30
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -20,18 +22,21 @@
 #           limit: 250                    # (Optional) Spending limit in USD
 #           limit_reset: "monthly"       # (Optional) Reset interval. Valid values: daily, weekly, monthly
 #           include_byok_in_limit: true   # (Optional) Whether BYOK usage counts toward the limit
-#           disabled: false               # (Optional) Whether the key is disabled. Default: provider default
+#           disabled: false               # (Optional) Whether the key is disabled. Default: provider/API default; rotation Lambda applies it via PATCH after Create
 #           expires_at: "2026-12-31T23:59:59Z" # (Optional) UTC ISO-8601 expiration timestamp
 #           creator_user_id: "user_123"  # (Optional) OpenRouter organization member ID to set as creator
 #           secret:                       # (Optional) AWS Secrets Manager configuration for storing the API key
 #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name
 #             name: "fixed-secret"       # (Optional) Fixed secret name (mutually exclusive with secret.name_prefix)
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
-#             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
+#             plain: false                # (Optional, deprecated) Must remain false; every secret stores JSON with api_key, api_key_id, name, and workspace_id, even without rotation
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
+#             rotation_enabled: true      # (Optional) Let the module-wide Lambda own this key's lifecycle. Default: true; false opts out (not recommended)
 variable "settings" {
   description = "Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence"
   type = object({
+    rotation_lambda      = optional(string)
+    rotation_period_days = optional(number, 30)
     workspaces = optional(map(object({
       workspace_id   = optional(string)
       workspace_name = optional(string)
@@ -46,11 +51,12 @@ variable "settings" {
         expires_at            = optional(string)
         creator_user_id       = optional(string)
         secret = optional(object({
-          name_prefix = optional(string)
-          name        = optional(string)
-          path        = optional(string)
-          plain       = optional(bool, false)
-          description = optional(string)
+          name_prefix      = optional(string)
+          name             = optional(string)
+          path             = optional(string)
+          plain            = optional(bool, false)
+          description      = optional(string)
+          rotation_enabled = optional(bool, true)
         }), {})
       })), {})
     })), {})
@@ -66,6 +72,15 @@ variable "settings" {
       ])) <= 1
     ])
     error_message = "Each settings.workspaces.<workspace> entry may set at most one of workspace_id, workspace_name, or workspace_slug."
+  }
+
+  validation {
+    condition = alltrue([
+      for workspace in values(try(var.settings.workspaces, {})) : (
+        try(workspace.workspace_id, null) == null || trimspace(workspace.workspace_id) != ""
+      )
+    ])
+    error_message = "Each explicitly set settings.workspaces.<workspace>.workspace_id must be nonempty."
   }
 
   validation {
@@ -130,5 +145,31 @@ variable "settings" {
       ]
     ]))
     error_message = "Each settings.workspaces.<workspace>.api_keys.<key>.secret entry must set only one of secret.name_prefix or secret.name."
+  }
+
+  validation {
+    condition = var.settings.rotation_lambda == null ? true : (
+      can(regex("^arn:[^:]+:lambda:[^:]+:[0-9]{12}:function:[^:]+(?::[^:]+)?$", var.settings.rotation_lambda)) ||
+      can(regex("^[A-Za-z0-9_-]{1,64}$", var.settings.rotation_lambda))
+    )
+    error_message = "settings.rotation_lambda must be a Lambda function name (1-64 letters, numbers, underscores or hyphens) or full function ARN."
+  }
+
+  validation {
+    condition = (
+      var.settings.rotation_period_days >= 1 &&
+      var.settings.rotation_period_days <= 1000 &&
+      var.settings.rotation_period_days == floor(var.settings.rotation_period_days)
+    )
+    error_message = "settings.rotation_period_days must be a whole number from 1 through 1000."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for workspace in values(var.settings.workspaces) : [
+        for api_key in values(workspace.api_keys) : !api_key.secret.plain
+      ]
+    ]))
+    error_message = "settings.workspaces.<workspace>.api_keys.<key>.secret.plain must be false; every secret stores api_key, api_key_id, name, and workspace_id as JSON regardless of rotation."
   }
 }

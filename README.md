@@ -3,8 +3,7 @@
   ** 
   ** This file was automatically generated. 
   ** 1) Make all changes to `README.yaml` 
-  ** 2) Run `make init` (you only need to do this once)
-  ** 3) Run`make readme` to rebuild this file. 
+  ** 2) Run `tronador readme build` to rebuild this file.
   -->
 [![README Header][readme_header_img]][readme_header_link]
 
@@ -15,10 +14,10 @@
  [![Latest Release](https://img.shields.io/github/release/cloudopsworks/terraform-module-openrouter-mgmt-api-keys.svg?style=for-the-badge)](https://github.com/cloudopsworks/terraform-module-openrouter-mgmt-api-keys/releases/latest) [![Last Updated](https://img.shields.io/github/last-commit/cloudopsworks/terraform-module-openrouter-mgmt-api-keys.svg?style=for-the-badge)](https://github.com/cloudopsworks/terraform-module-openrouter-mgmt-api-keys/commits)
 
 
-Terraform module for managing OpenRouter workspace API keys through the
+Terraform module for OpenRouter workspace API keys and AWS Secrets Manager. Terraform
+creates nonrotating keys through the
 [cloudopsworks/openrouter](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest)
-provider. Each managed API key is persisted immediately to AWS Secrets Manager because
-the OpenRouter management API only returns the raw secret value when the key is created.
+provider; a configured rotation Lambda owns creation and replacement of rotating keys.
 
 
 ---
@@ -50,21 +49,29 @@ We have [*lots of terraform modules*][terraform_modules] that are Open Source an
 
 ## Overview
 
-This module manages OpenRouter API keys for existing workspaces and stores the generated
-credentials in AWS Secrets Manager.
+This module manages OpenRouter API key configuration for existing workspaces and stores
+credentials in AWS Secrets Manager. A key has exactly one lifecycle owner: Terraform
+when rotation is off, or the configured Lambda when rotation is on.
 
 ### What it does
 
-1. **Creates OpenRouter API keys** for one or more existing workspaces.
+1. **Creates nonrotating OpenRouter API keys** through Terraform. For enrolled keys,
+   the Lambda creates the first and every subsequent OpenRouter API key.
 2. **Resolves workspace selectors** from `workspace_id`, `workspace_name`, or `workspace_slug`
    using the provider workspace data source when needed.
 3. **Supports per-key controls** such as spend limits, reset windows, disabled state,
    BYOK accounting, expiration, and creator assignment.
-4. **Persists secrets in AWS Secrets Manager** either as plain strings or as JSON objects
-   in the form `{"api_key":"<value>"}`.
+4. **Stores API keys in AWS Secrets Manager** as JSON with `api_key`, `api_key_id`,
+   `name`, and `workspace_id`. New rotating secrets start with a noncredential
+   bootstrap marker until the Lambda creates the first key.
+5. **Schedules Lambda-owned rotation** for every enrolled key when module-wide
+   `settings.rotation_lambda` is set to a Lambda name or ARN. Set the shared interval
+   with `settings.rotation_period_days` (default: 30 days). Per-key opt-out is
+   available but not recommended.
 
-When no workspace selector is set for an entry, the module passes `null` through for
-`workspace_id` exactly as configured.
+When no workspace selector is set, the module passes `null` for `workspace_id`.
+OpenRouter may assign a default workspace; the active credential version should
+record the workspace UUID reported for the created key.
 
 ### Naming convention
 
@@ -80,10 +87,111 @@ overridden per API key with `secret.path`.
 
 ### Secret structure
 
-| `plain` | Stored value |
-|---------|-------------|
-| `false` (default) | `{"api_key": "or-..."}` |
-| `true` | `or-...` |
+All usable credential versions contain `api_key`, `api_key_id`, `name`, and
+`workspace_id`. Nonrotating versions are written by Terraform; rotating versions
+are written by the Lambda. `workspace_id` is the created key's reported workspace
+ID and may be JSON `null` when the API does not return one. `secret.plain = true`
+is rejected; remove legacy uses and update consumers to parse JSON.
+
+| Stage | Owner | JSON purpose |
+|-------|-------|--------------|
+| `AWSCURRENT` | Terraform without rotation; Lambda with rotation | Active credential: `api_key`, `api_key_id`, `name`, `workspace_id` |
+| `TFBOOTSTRAP` | Terraform, rotating keys only | Initial version. On a new secret, `api_key: null` and `api_key_id: "__CREATE_NEW__"` request first-key creation. Existing bootstrap versions are not rewritten. |
+| `TFCONFIG` | Terraform, rotating keys only | Versioned creation parameters for the Lambda; never a usable credential. |
+| `AWSPENDING` | Lambda | Candidate credential, written using the rotation event's `ClientRequestToken` before promotion. |
+
+A newly created rotating secret initially has `AWSCURRENT` on its bootstrap version.
+It is **not usable** until the Lambda creates a real key and promotes an `AWSPENDING`
+version. The Lambda must treat only the exact pair `api_key = null` and
+`api_key_id = "__CREATE_NEW__"` as bootstrap; missing or malformed fields are errors.
+
+Terraform writes `TFCONFIG` separately so changing key settings never rewrites a
+Lambda-owned `AWSCURRENT`. Its JSON shape is:
+
+```json
+{
+  "schema_version": 1,
+  "name": "<resolved API key name>",
+  "workspace_id": "<resolved workspace ID or null>",
+  "limit": 0,
+  "limit_reset": "weekly",
+  "include_byok_in_limit": false,
+  "disabled": false,
+  "expires_at": "2026-12-31T23:59:59Z",
+  "creator_user_id": "user_123"
+}
+```
+
+Optional fields are JSON `null` when unset; the Lambda must omit **only null**
+fields from OpenRouter requests, preserving `false` and `0`. `disabled` is an
+OpenRouter **update** parameter, not a Create parameter. Configuration changes
+apply on the next successful rotation, not immediately to the active key. A
+config-version replacement can briefly leave `TFCONFIG` unavailable; Lambda
+should fail/retry rather than use stale defaults.
+
+### Ownership and migration
+
+Terraform manages OpenRouter key resources only for nonrotating keys. For rotating
+keys, it manages the secret container, an ignored `TFBOOTSTRAP` version, the
+`TFCONFIG` version, and the rotation schedule. Lambda owns key creation, replacement,
+retirement, and active credential versions. Outputs `api_key_ids` and
+`api_key_labels` therefore contain only nonrotating keys; the current rotating
+key ID is in that secret's `AWSCURRENT` JSON. `rotation_secret_arns` and
+`rotation_config_version_ids` identify enrolled secrets and config versions.
+
+**Existing rotating deployments require a state migration before applying this
+change.** Back up Terraform state and each secret's `AWSCURRENT`. After updating
+the module source but before plan/apply, remove only each rotating
+`openrouter_api_key.this` binding from Terraform state; do **not** destroy its
+remote key. For example, from the Terragrunt deployment directory (adjust the
+address if the module is nested):
+
+```sh
+terragrunt state rm 'openrouter_api_key.this["engineering/backend"]'
+```
+
+Keep the existing secret, bootstrap-version, and rotation resources in state.
+A reviewed plan must show no rotating OpenRouter key creation/deletion and no
+replacement of the active secret; it should add only `TFCONFIG` for each enrolled
+key. Do not apply a plan that destroys rotating OpenRouter keys. State removal
+does not revoke the previously Terraform-owned key: compare its ID with the
+current credential's ID and safely retire it if it is no longer active. An old bootstrap
+version may lack `TFBOOTSTRAP`; add that label to its exact version ID without
+moving `AWSCURRENT` if long-term retention is required. The label retains old
+secret material, so restrict access and follow your security policy. Existing
+`AWSCURRENT` versions may use the earlier four-field format; Lambda must accept
+valid active legacy payloads while refusing malformed bootstrap data.
+
+If upgrading directly from a module version before the nonrotating resource
+split, existing nonrotating/opted-out versions also need state moves from
+`aws_secretsmanager_secret_version.this["..."]` to
+`aws_secretsmanager_secret_version.non_rotating["..."]`. Enabling or disabling
+rotation later is an ownership migration, not a safe schedule toggle. Coordinate
+the active key, secret value, and state before changing enrollment.
+
+### Rotation Lambda prerequisites
+
+Supply an existing Lambda; this module does not implement it. The Lambda must
+use the AWS four-step rotation protocol, read `TFCONFIG` by staging label,
+create the OpenRouter key with the resolved parameters, write a real credential
+to `AWSPENDING`, validate it, promote it to `AWSCURRENT`, then retire the prior
+key in a retry-safe way. It must never modify `TFCONFIG` or `TFBOOTSTRAP`.
+The exact implementation brief appears in **Lambda-agent prompt** below.
+
+Grant Secrets Manager permission to invoke the Lambda. Its execution role needs
+Secrets Manager and, if applicable, KMS access, plus separate OpenRouter
+management API credentials with permission to create/update/delete keys in
+the configured workspace. Bare Lambda names are resolved in the configured AWS
+provider account/Region; full ARNs pass through, including qualifiers.
+When the module-wide Lambda is omitted, Terraform owns every key. Setting a
+rotation period alone does not enable rotation. Per-key opt-out remains available
+but is **not recommended**. AWS may invoke the Lambda during the first apply,
+so the function and permissions must be ready before applying new rotating keys.
+
+Deleting the AWS secret does not automatically revoke keys created by the Lambda;
+decommission cleanup is the Lambda/operator's responsibility. OpenRouter returns
+plaintext only on Create, so a crash between OpenRouter creation and writing
+`AWSPENDING` can orphan a key; the Lambda needs an explicit reconciliation policy.
 
 ## Usage
 
@@ -114,6 +222,9 @@ terragrunt apply
 ```yaml
 # Module configuration
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
+#   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; when set, Lambda owns creation and rotation of enrolled keys. Omit for Terraform ownership. ARN example: arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key
+#   # Bare names use the configured AWS provider account/Region; full ARNs pass through, including any qualifier.
+#   rotation_period_days: 30            # (Optional) Module-wide rotation interval in whole days, 1-1000. Default: 30; used when rotation is enabled
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -126,15 +237,16 @@ terragrunt apply
 #           limit: 250                    # (Optional) Spending limit in USD
 #           limit_reset: "monthly"       # (Optional) Reset interval. Valid values: daily, weekly, monthly
 #           include_byok_in_limit: true   # (Optional) Whether BYOK usage counts toward the limit
-#           disabled: false               # (Optional) Whether the key is disabled. Default: provider default
+#           disabled: false               # (Optional) Whether the key is disabled. Default: provider/API default; rotation Lambda applies it via PATCH after Create
 #           expires_at: "2026-12-31T23:59:59Z" # (Optional) UTC ISO-8601 expiration timestamp
 #           creator_user_id: "user_123"  # (Optional) OpenRouter organization member ID to set as creator
 #           secret:                       # (Optional) AWS Secrets Manager configuration for storing the API key
 #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name
 #             name: "fixed-secret"       # (Optional) Fixed secret name (mutually exclusive with secret.name_prefix)
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
-#             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
+#             plain: false                # (Optional, deprecated) Must be false; all secrets store JSON with api_key, api_key_id, name, and workspace_id, with or without rotation.
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
+#             rotation_enabled: false     # (Optional) Opt out of Lambda-owned key lifecycle; default true. NOT RECOMMENDED
 settings:
   workspaces:
     engineering:
@@ -154,7 +266,6 @@ settings:
           expires_at: "2026-12-31T23:59:59Z"
           secret:
             name: "openrouter-break-glass"
-            plain: true
     shared-services:
       workspace_name: "Shared Services"
       api_keys:
@@ -216,6 +327,8 @@ inputs = {
 | `org.environment_name` | `string` | yes | Environment name such as `prod` or `stg` |
 | `spoke_def` | `string` | no | Three-digit spoke identifier. Default: `"001"` |
 | `extra_tags` | `map(string)` | no | Additional tags merged onto all AWS secrets |
+| `settings.rotation_lambda` | `string` | no | Existing module-wide Lambda name or ARN; when set, Lambda owns key creation/rotation for enrolled keys. Omit for Terraform ownership |
+| `settings.rotation_period_days` | `number` | no | Shared rotation interval in whole days, 1–1000; default `30`. Used when rotation is enabled |
 | `settings.workspaces` | `map(object)` | no | Map of OpenRouter workspaces keyed by logical name |
 
 ### `settings.workspaces.<key>`
@@ -238,16 +351,26 @@ inputs = {
 | `limit` | `number` | no | Spending limit in USD |
 | `limit_reset` | `string` | no | One of `daily`, `weekly`, `monthly` |
 | `include_byok_in_limit` | `bool` | no | Whether BYOK usage counts toward the limit |
-| `disabled` | `bool` | no | Whether the API key is disabled |
-| `expires_at` | `string` | no | UTC ISO-8601 expiration timestamp |
+| `disabled` | `bool` | no | Whether the API key is disabled; the Lambda must PATCH this after Create when set |
+| `expires_at` | `string` | no | Fixed UTC ISO-8601 expiration timestamp; rotation does not extend it automatically |
 | `creator_user_id` | `string` | no | Creator member identifier in OpenRouter |
 | `secret.name_prefix` | `string` | no | Secret name prefix composed as `name_prefix-<system_name>` |
 | `secret.name` | `string` | no | Fixed secret name |
 | `secret.path` | `string` | no | Secret path prefix. Default: `/<org_unit>/<env_name>/<env_type>/<workspace_key>` |
-| `secret.plain` | `bool` | no | Store plain string instead of JSON. Default: `false` |
+| `secret.plain` | `bool` | no | Deprecated compatibility input; default `false`, and `true` is always rejected. Every secret stores JSON with `api_key`, `api_key_id`, `name`, and `workspace_id` |
 | `secret.description` | `string` | no | Human-readable description for the AWS secret |
+| `secret.rotation_enabled` | `bool` | no | Default `true`. Set `false` to opt out of Lambda-owned key lifecycle; **not recommended** |
 
 \* Exactly one of `name_prefix` or `name` must be provided.
+
+### Outputs
+
+| Output | Content |
+|--------|---------|
+| `api_key_ids`, `api_key_labels` | Terraform-owned **nonrotating** keys only; do not use these to identify a rotating key |
+| `secret_arns`, `secret_names` | Secrets for all configured keys |
+| `rotation_secret_arns` | Secrets enrolled in Lambda-owned rotation; useful for scoped Lambda IAM |
+| `rotation_config_version_ids` | Version IDs currently managed by Terraform under `TFCONFIG` |
 
 ## Quick Start
 
@@ -272,6 +395,9 @@ inputs = {
    aws secretsmanager get-secret-value \
      --secret-id "$(terragrunt output -json secret_names | jq -r 'to_entries[0].value')"
    ```
+
+   For a new rotating secret, wait for successful initial Lambda rotation before
+   giving this value to consumers; the bootstrap `AWSCURRENT` has no usable key.
 
 
 ## Examples
@@ -332,8 +458,7 @@ inputs = {
             name       = "temporary-openrouter-key"
             expires_at = "2026-12-31T23:59:59Z"
             secret = {
-              name  = "temporary-openrouter-key"
-              plain = true
+              name = "temporary-openrouter-key"
             }
           }
         }
@@ -342,6 +467,91 @@ inputs = {
   }
 }
 ```
+
+## Module-wide Secrets Manager rotation
+
+The Lambda must already exist and have the permissions described under **Rotation Lambda prerequisites**.
+Supplying one `settings.rotation_lambda` name or ARN enables rotation for every key at
+the shared `settings.rotation_period_days` interval. Set `secret.rotation_enabled = false`
+only for an exceptional opt-out; this is **not recommended**.
+Setting a period alone does not enable rotation.
+
+```hcl
+inputs = {
+  org = {
+    organization_name = "acme"
+    organization_unit = "platform"
+    environment_type  = "production"
+    environment_name  = "prod"
+  }
+
+  settings = {
+    # Alternatively use the function name "rotate-openrouter-key" for an AWS Lambda lookup.
+    rotation_lambda = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key"
+    rotation_period_days = 45
+    workspaces = {
+      engineering = {
+        workspace_id = "ws_1234567890"
+        api_keys = {
+          backend = {
+            name = "backend-openrouter"
+          }
+          exceptional_key = {
+            name = "exceptional-openrouter-key"
+            secret = {
+              rotation_enabled = false # Opt out only when strictly necessary; not recommended.
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## Lambda-agent prompt
+
+Copy this brief to the agent implementing the **separate** rotation Lambda:
+
+> Build an AWS Secrets Manager rotation Lambda for the Cloud Ops Works OpenRouter
+> API-key module. The module owns the AWS secret, an initial `TFBOOTSTRAP` version,
+> a versioned `TFCONFIG` payload, and the rotation schedule. Your Lambda alone owns
+> creation, replacement, validation, retirement, and cleanup of rotating OpenRouter
+> keys and all usable `AWSCURRENT`/`AWSPENDING` credential versions. Do not import
+> rotating keys into Terraform or modify `TFCONFIG`/`TFBOOTSTRAP`.
+>
+> Implement all Secrets Manager steps (`createSecret`, `setSecret`, `testSecret`,
+> `finishSecret`) using the event's SecretId and ClientRequestToken. Validate the
+> secret identity, rotation status, and token stages; prevent confused-deputy use.
+> At the start, read `TFCONFIG` by VersionStage and require `schema_version = 1`.
+> It contains `name`, `workspace_id`, `limit`, `limit_reset`,
+> `include_byok_in_limit`, `disabled`, `expires_at`, and `creator_user_id`.
+> Snapshot its VersionId and parameter values for the entire token; retry if the
+> stage is temporarily absent, never fall back to defaults. Omit only JSON-null
+> OpenRouter request fields; preserve `false` and `0`.
+>
+> `AWSCURRENT` normally contains real `api_key`, `api_key_id`, `name`, and
+> `workspace_id`. The **only** first-key bootstrap signal is `api_key = null`
+> together with `api_key_id = "__CREATE_NEW__"`; do not mistake malformed data
+> for bootstrap. Existing deployments may have a valid four-field active payload
+> from an older Lambda. Create a new key with the configured name/workspace,
+> budget, reset, BYOK, expiry, and creator. OpenRouter `disabled` is update-only:
+> PATCH it after Create when configured, and do not re-enable a deliberately
+> disabled key merely to pass `testSecret`. Do not extend fixed `expires_at`.
+> Capture the Create response's plaintext key, hash/ID, name, and reported
+> workspace ID. Write `AWSPENDING` with at least those four credential fields
+> under ClientRequestToken, then validate the candidate before promoting it.
+>
+> Make retries idempotent: reuse an existing `AWSPENDING` version for the token,
+> never create another OpenRouter key simply because the same step is retried.
+> Promote the tested version to `AWSCURRENT` before retiring the predecessor.
+> Record enough predecessor/config-version information for cleanup to remain
+> retryable even if finishSecret is called after promotion. Handle the crash
+> window between OpenRouter Create and AWS pending write with an explicit orphan
+> reconciliation policy: plaintext is returned only at Create, so perfect
+> cross-service exactly-once semantics cannot be assumed. Handle first rotation,
+> normal rotation, migrated active keys, missing `TFCONFIG`, changed config,
+> deliberate disabled keys, retries, and decommissioning in tests.
 
 
 
@@ -360,7 +570,7 @@ Available targets:
 ## Requirements
 
 | Name | Version |
-|------|---------|
+| ---- | ------- |
 | <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.3 |
 | <a name="requirement_aws"></a> [aws](#requirement\_aws) | ~> 6.35 |
 | <a name="requirement_openrouter"></a> [openrouter](#requirement\_openrouter) | ~> 0.1 |
@@ -368,42 +578,48 @@ Available targets:
 ## Providers
 
 | Name | Version |
-|------|---------|
-| <a name="provider_aws"></a> [aws](#provider\_aws) | ~> 6.35 |
-| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | ~> 0.1 |
+| ---- | ------- |
+| <a name="provider_aws"></a> [aws](#provider\_aws) | 6.72.0 |
+| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | 0.4.0 |
 
 ## Modules
 
 | Name | Source | Version |
-|------|--------|---------|
+| ---- | ------ | ------- |
 | <a name="module_tags"></a> [tags](#module\_tags) | cloudopsworks/tags/local | 1.0.10 |
 
 ## Resources
 
 | Name | Type |
-|------|------|
+| ---- | ---- |
 | [aws_secretsmanager_secret.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret) | resource |
+| [aws_secretsmanager_secret_rotation.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_rotation) | resource |
+| [aws_secretsmanager_secret_version.non_rotating](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
+| [aws_secretsmanager_secret_version.rotation_config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
 | [aws_secretsmanager_secret_version.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
 | [openrouter_api_key.this](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest/docs/resources/api_key) | resource |
+| [aws_lambda_function.rotation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/lambda_function) | data source |
 | [aws_region.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
 | [openrouter_workspaces.lookup](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest/docs/data-sources/workspaces) | data source |
 
 ## Inputs
 
 | Name | Description | Type | Default | Required |
-|------|-------------|------|---------|:--------:|
+| ---- | ----------- | ---- | ------- | :------: |
 | <a name="input_extra_tags"></a> [extra\_tags](#input\_extra\_tags) | Extra tags to add to the resources | `map(string)` | `{}` | no |
 | <a name="input_is_hub"></a> [is\_hub](#input\_is\_hub) | Is this a hub or spoke configuration? | `bool` | `false` | no |
 | <a name="input_org"></a> [org](#input\_org) | Organization details | <pre>object({<br/>    organization_name = string<br/>    organization_unit = string<br/>    environment_type  = string<br/>    environment_name  = string<br/>  })</pre> | n/a | yes |
-| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    workspaces = optional(map(object({<br/>      workspace_id   = optional(string)<br/>      workspace_name = optional(string)<br/>      workspace_slug = optional(string)<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix = optional(string)<br/>          name        = optional(string)<br/>          path        = optional(string)<br/>          plain       = optional(bool, false)<br/>          description = optional(string)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
+| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    rotation_lambda      = optional(string)<br/>    rotation_period_days = optional(number, 30)<br/>    workspaces = optional(map(object({<br/>      workspace_id   = optional(string)<br/>      workspace_name = optional(string)<br/>      workspace_slug = optional(string)<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix      = optional(string)<br/>          name             = optional(string)<br/>          path             = optional(string)<br/>          plain            = optional(bool, false)<br/>          description      = optional(string)<br/>          rotation_enabled = optional(bool, true)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
 | <a name="input_spoke_def"></a> [spoke\_def](#input\_spoke\_def) | Spoke ID Number, must be a 3 digit number | `string` | `"001"` | no |
 
 ## Outputs
 
 | Name | Description |
-|------|-------------|
-| <a name="output_api_key_ids"></a> [api\_key\_ids](#output\_api\_key\_ids) | Map of OpenRouter API key IDs keyed by '<workspace\_key>/<api\_key\_key>' |
-| <a name="output_api_key_labels"></a> [api\_key\_labels](#output\_api\_key\_labels) | Map of server-generated OpenRouter API key labels keyed by '<workspace\_key>/<api\_key\_key>' |
+| ---- | ----------- |
+| <a name="output_api_key_ids"></a> [api\_key\_ids](#output\_api\_key\_ids) | Map of Terraform-managed nonrotating OpenRouter API key IDs keyed by '<workspace\_key>/<api\_key\_key>'; rotating key IDs are Lambda-owned |
+| <a name="output_api_key_labels"></a> [api\_key\_labels](#output\_api\_key\_labels) | Map of Terraform-managed nonrotating OpenRouter API key labels keyed by '<workspace\_key>/<api\_key\_key>'; rotating key labels are Lambda-owned |
+| <a name="output_rotation_config_version_ids"></a> [rotation\_config\_version\_ids](#output\_rotation\_config\_version\_ids) | Map of Terraform-managed TFCONFIG secret version IDs for rotating keys, keyed by '<workspace\_key>/<api\_key\_key>' |
+| <a name="output_rotation_secret_arns"></a> [rotation\_secret\_arns](#output\_rotation\_secret\_arns) | Map of AWS Secrets Manager secret ARNs enrolled in Lambda-owned OpenRouter key rotation, keyed by '<workspace\_key>/<api\_key\_key>' |
 | <a name="output_secret_arns"></a> [secret\_arns](#output\_secret\_arns) | Map of AWS Secrets Manager secret ARNs holding OpenRouter API keys, keyed by '<workspace\_key>/<api\_key\_key>' |
 | <a name="output_secret_names"></a> [secret\_names](#output\_secret\_names) | Map of AWS Secrets Manager secret names holding OpenRouter API keys, keyed by '<workspace\_key>/<api\_key\_key>' |
 

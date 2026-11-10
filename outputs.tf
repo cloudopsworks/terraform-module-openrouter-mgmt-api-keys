@@ -8,14 +8,14 @@
 #
 
 output "api_key_ids" {
-  description = "Map of OpenRouter API key IDs keyed by '<workspace_key>/<api_key_key>'"
+  description = "Map of Terraform-managed nonrotating OpenRouter API key IDs keyed by '<workspace_key>/<api_key_key>'; rotating key IDs are Lambda-owned"
   value = {
     for k, v in openrouter_api_key.this : k => v.id
   }
 }
 
 output "api_key_labels" {
-  description = "Map of server-generated OpenRouter API key labels keyed by '<workspace_key>/<api_key_key>'"
+  description = "Map of Terraform-managed nonrotating OpenRouter API key labels keyed by '<workspace_key>/<api_key_key>'; rotating key labels are Lambda-owned"
   value = {
     for k, v in openrouter_api_key.this : k => v.label
   }
@@ -32,5 +32,20 @@ output "secret_names" {
   description = "Map of AWS Secrets Manager secret names holding OpenRouter API keys, keyed by '<workspace_key>/<api_key_key>'"
   value = {
     for k, v in aws_secretsmanager_secret.this : k => v.name
+  }
+}
+
+output "rotation_secret_arns" {
+  description = "Map of AWS Secrets Manager secret ARNs enrolled in Lambda-owned OpenRouter key rotation, keyed by '<workspace_key>/<api_key_key>'"
+  value = {
+    for k, v in aws_secretsmanager_secret.this : k => v.arn
+    if contains(keys(local.rotating_api_keys), k)
+  }
+}
+
+output "rotation_config_version_ids" {
+  description = "Map of Terraform-managed TFCONFIG secret version IDs for rotating keys, keyed by '<workspace_key>/<api_key_key>'"
+  value = {
+    for k, v in aws_secretsmanager_secret_version.rotation_config : k => v.version_id
   }
 }

@@ -1,5 +1,8 @@
 # Module configuration
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
+#   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; when set, Lambda owns creation and rotation of enrolled keys. Omit for Terraform ownership. ARN example: arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key
+#   # Bare names use the configured AWS provider account/Region; full ARNs pass through, including any qualifier.
+#   rotation_period_days: 30            # (Optional) Module-wide rotation interval in whole days, 1-1000. Default: 30; used when rotation is enabled
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -12,13 +15,14 @@
 #           limit: 250                    # (Optional) Spending limit in USD
 #           limit_reset: "monthly"       # (Optional) Reset interval. Valid values: daily, weekly, monthly
 #           include_byok_in_limit: true   # (Optional) Whether BYOK usage counts toward the limit
-#           disabled: false               # (Optional) Whether the key is disabled. Default: provider default
+#           disabled: false               # (Optional) Whether the key is disabled. Default: provider/API default; rotation Lambda applies it via PATCH after Create
 #           expires_at: "2026-12-31T23:59:59Z" # (Optional) UTC ISO-8601 expiration timestamp
 #           creator_user_id: "user_123"  # (Optional) OpenRouter organization member ID to set as creator
 #           secret:                       # (Optional) AWS Secrets Manager configuration for storing the API key
 #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name
 #             name: "fixed-secret"       # (Optional) Fixed secret name (mutually exclusive with secret.name_prefix)
 #             path: "/custom/path"       # (Optional) Secret path prefix. Default: /<org_unit>/<env_name>/<env_type>/<workspace_key>
-#             plain: false                # (Optional) Store API key as plain string; default false stores JSON {"api_key":"<value>"}
+#             plain: false                # (Optional, deprecated) Must be false; all secrets store JSON with api_key, api_key_id, name, and workspace_id, with or without rotation.
 #             description: "..."         # (Optional) Human-readable description for the Secrets Manager secret
+#             rotation_enabled: false     # (Optional) Opt out of Lambda-owned key lifecycle; default true. NOT RECOMMENDED
 settings: {}
