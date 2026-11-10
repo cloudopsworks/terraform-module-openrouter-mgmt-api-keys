@@ -84,10 +84,6 @@ locals {
     )
   }
 
-  secret_plain = {
-    for k, v in local.api_keys : k => try(v.secret.plain, false)
-  }
-
   secret_descriptions = {
     for k, v in local.api_keys : k => try(v.secret.description, null)
   }

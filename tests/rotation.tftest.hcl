@@ -177,7 +177,7 @@ run "rotation_opt_out_is_per_key" {
   }
 }
 
-run "json_secret_pairs_each_key_with_its_workspace" {
+run "json_secret_tracks_every_key_without_rotation" {
   command = apply
 
   variables {
@@ -206,16 +206,59 @@ run "json_secret_pairs_each_key_with_its_workspace" {
   assert {
     condition = alltrue([
       for key in ["engineering/backend", "shared/reporting"] : (
-        length(keys(jsondecode(aws_secretsmanager_secret_version.this[key].secret_string))) == 3 &&
+        length(keys(jsondecode(aws_secretsmanager_secret_version.this[key].secret_string))) == 4 &&
         jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key == openrouter_api_key.this[key].key &&
         jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key_id == openrouter_api_key.this[key].id &&
+        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).name == openrouter_api_key.this[key].name &&
         jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).workspace_id == openrouter_api_key.this[key].workspace_id
       )
       ]) && (
       jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).workspace_id == "ws_engineering" &&
       jsondecode(aws_secretsmanager_secret_version.this["shared/reporting"].secret_string).workspace_id == "ws_shared"
     )
-    error_message = "Each JSON secret must pair its own API key, OpenRouter key ID, and workspace ID."
+    error_message = "Without rotation, each JSON secret must contain its own API key, key ID, key name, and workspace ID."
+  }
+}
+
+run "json_secret_tracks_every_key_with_rotation" {
+  command = apply
+
+  variables {
+    settings = {
+      rotation_lambda = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
+      workspaces = {
+        engineering = {
+          workspace_id = "ws_engineering"
+          api_keys = {
+            backend = {
+              name = "backend"
+            }
+            reporting = {
+              name = "reporting"
+              secret = {
+                rotation_enabled = false
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      for key in ["engineering/backend", "engineering/reporting"] : (
+        length(keys(jsondecode(aws_secretsmanager_secret_version.this[key].secret_string))) == 4 &&
+        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key == openrouter_api_key.this[key].key &&
+        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key_id == openrouter_api_key.this[key].id &&
+        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).name == openrouter_api_key.this[key].name &&
+        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).workspace_id == openrouter_api_key.this[key].workspace_id
+      )
+      ]) && (
+      length(aws_secretsmanager_secret_rotation.this) == 1 &&
+      contains(keys(aws_secretsmanager_secret_rotation.this), "engineering/backend")
+    )
+    error_message = "Both rotating and opted-out keys must store all four JSON fields."
   }
 }
 
@@ -267,8 +310,8 @@ run "empty_explicit_workspace_id_is_rejected" {
   expect_failures = [var.settings]
 }
 
-run "plain_secret_stays_raw_without_rotation" {
-  command = apply
+run "plain_secret_is_rejected_without_rotation" {
+  command = plan
 
   variables {
     settings = {
@@ -288,10 +331,7 @@ run "plain_secret_stays_raw_without_rotation" {
     }
   }
 
-  assert {
-    condition     = aws_secretsmanager_secret_version.this["engineering/backend"].secret_string == openrouter_api_key.this["engineering/backend"].key && length(aws_secretsmanager_secret_rotation.this) == 0
-    error_message = "A non-rotating plain secret must retain the raw API key string."
-  }
+  expect_failures = [var.settings]
 }
 
 run "plain_secret_is_rejected_when_enrolled_in_rotation" {
@@ -319,8 +359,8 @@ run "plain_secret_is_rejected_when_enrolled_in_rotation" {
   expect_failures = [var.settings]
 }
 
-run "plain_secret_is_allowed_when_opted_out" {
-  command = apply
+run "plain_secret_is_rejected_when_opted_out" {
+  command = plan
 
   variables {
     settings = {
@@ -342,10 +382,7 @@ run "plain_secret_is_allowed_when_opted_out" {
     }
   }
 
-  assert {
-    condition     = aws_secretsmanager_secret_version.this["engineering/backend"].secret_string == openrouter_api_key.this["engineering/backend"].key && length(aws_secretsmanager_secret_rotation.this) == 0
-    error_message = "An opted-out plain secret must remain raw and unscheduled for rotation."
-  }
+  expect_failures = [var.settings]
 }
 
 run "invalid_period_is_rejected" {

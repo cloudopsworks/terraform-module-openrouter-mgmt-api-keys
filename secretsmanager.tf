@@ -22,15 +22,12 @@ resource "aws_secretsmanager_secret_version" "this" {
   for_each = local.api_keys
 
   secret_id = aws_secretsmanager_secret.this[each.key].id
-  secret_string = local.secret_plain[each.key] ? (
-    openrouter_api_key.this[each.key].key
-    ) : (
-    jsonencode({
-      api_key      = openrouter_api_key.this[each.key].key
-      api_key_id   = openrouter_api_key.this[each.key].id
-      workspace_id = openrouter_api_key.this[each.key].workspace_id
-    })
-  )
+  secret_string = jsonencode({
+    api_key      = openrouter_api_key.this[each.key].key
+    api_key_id   = openrouter_api_key.this[each.key].id
+    name         = openrouter_api_key.this[each.key].name
+    workspace_id = openrouter_api_key.this[each.key].workspace_id
+  })
 }
 
 data "aws_lambda_function" "rotation" {
