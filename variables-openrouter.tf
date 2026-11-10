@@ -9,7 +9,9 @@
 
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
 #   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; when set, Lambda owns creation and rotation of enrolled OpenRouter keys
-#   rotation_period_days: 30             # (Optional) Module-wide rotation interval in whole days, 1-1000. Default: 30
+#   rotation_period_days: 30             # (Optional) Rotation interval in whole days, 1-1000. Default: 30; ignored with cron. 1000 uses legacy scheduling without a window override
+#   rotation_window_hours: 1             # (Optional) Rotation window in whole hours, 1-23. Omit for the AWS default
+#   rotation_cron_expression: "cron(0 3 1 * ? *)" # (Optional) AWS cron at one UTC hour; overrides the interval. Default: null
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -35,8 +37,10 @@
 variable "settings" {
   description = "Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence"
   type = object({
-    rotation_lambda      = optional(string)
-    rotation_period_days = optional(number, 30)
+    rotation_lambda          = optional(string)
+    rotation_period_days     = optional(number, 30) # (Optional) Whole-day interval, 1-1000; 1000 uses legacy scheduling without a window override. Ignored with cron. Default: 30
+    rotation_window_hours    = optional(number)     # (Optional) Whole-hour window, 1-23. Omit for the AWS default
+    rotation_cron_expression = optional(string)     # (Optional) AWS cron at one UTC hour; overrides the interval. Default: null
     workspaces = optional(map(object({
       workspace_id   = optional(string)
       workspace_name = optional(string)
@@ -162,6 +166,42 @@ variable "settings" {
       var.settings.rotation_period_days == floor(var.settings.rotation_period_days)
     )
     error_message = "settings.rotation_period_days must be a whole number from 1 through 1000."
+  }
+
+  validation {
+    condition = (
+      var.settings.rotation_period_days != 1000 ||
+      var.settings.rotation_cron_expression != null ||
+      var.settings.rotation_window_hours == null
+    )
+    error_message = "A window override requires an AWS rate interval of at most 999 days or a cron expression. Omit settings.rotation_window_hours to keep legacy 1000-day scheduling."
+  }
+
+  validation {
+    condition = var.settings.rotation_window_hours == null ? true : (
+      var.settings.rotation_window_hours >= 1 &&
+      var.settings.rotation_window_hours <= 23 &&
+      var.settings.rotation_window_hours == floor(var.settings.rotation_window_hours)
+    )
+    error_message = "settings.rotation_window_hours must be a whole number from 1 through 23."
+  }
+
+  validation {
+    # AWS validates the calendar fields; the module checks the UTC window.
+    condition = var.settings.rotation_cron_expression == null ? true : try(
+      tonumber(regex("^cron\\(0\\s+([01]?[0-9]|2[0-3])\\s+[^\\s()]+\\s+[^\\s()]+\\s+[^\\s()]+\\s+[^\\s()]+\\)$", trimspace(var.settings.rotation_cron_expression))[0]) + coalesce(var.settings.rotation_window_hours, 0) <= 24,
+      false
+    )
+    error_message = "settings.rotation_cron_expression must be a six-field AWS cron expression with minute 0 and one UTC hour (0-23); the rotation window must not extend past midnight."
+  }
+
+  validation {
+    condition = var.settings.rotation_lambda == null || var.settings.rotation_cron_expression == null ? true : alltrue(flatten([
+      for workspace in values(var.settings.workspaces) : [
+        for api_key in values(workspace.api_keys) : !api_key.secret.rotation_enabled || api_key.expires_at != null
+      ]
+    ]))
+    error_message = "Each rotating OpenRouter key must set expires_at when settings.rotation_cron_expression is configured."
   }
 
   validation {
