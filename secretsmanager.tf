@@ -10,6 +10,27 @@
 # Secret path: <secret_path>/<secret_name>
 # The key value is only returned on create by the OpenRouter management API.
 
+locals {
+  rotating_api_keys = {
+    for key, api_key in local.api_keys : key => api_key
+    if var.settings.rotation_lambda != null && api_key.secret.rotation_enabled
+  }
+
+  non_rotating_api_keys = {
+    for key, api_key in local.api_keys : key => api_key
+    if var.settings.rotation_lambda == null || !api_key.secret.rotation_enabled
+  }
+
+  secret_payloads = {
+    for key, api_key in openrouter_api_key.this : key => jsonencode({
+      api_key      = api_key.key
+      api_key_id   = api_key.id
+      name         = api_key.name
+      workspace_id = api_key.workspace_id
+    })
+  }
+}
+
 resource "aws_secretsmanager_secret" "this" {
   for_each = local.api_keys
 
@@ -19,15 +40,24 @@ resource "aws_secretsmanager_secret" "this" {
 }
 
 resource "aws_secretsmanager_secret_version" "this" {
-  for_each = local.api_keys
+  for_each = local.rotating_api_keys
 
-  secret_id = aws_secretsmanager_secret.this[each.key].id
-  secret_string = jsonencode({
-    api_key      = openrouter_api_key.this[each.key].key
-    api_key_id   = openrouter_api_key.this[each.key].id
-    name         = openrouter_api_key.this[each.key].name
-    workspace_id = openrouter_api_key.this[each.key].workspace_id
-  })
+  secret_id      = aws_secretsmanager_secret.this[each.key].id
+  secret_string  = local.secret_payloads[each.key]
+  version_stages = ["TFBOOTSTRAP"]
+
+  # The rotation Lambda owns AWSCURRENT after bootstrap. Ignore later payload and
+  # staging-label drift so ordinary external rotation does not restore this version.
+  lifecycle {
+    ignore_changes = [secret_string, version_stages]
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "non_rotating" {
+  for_each = local.non_rotating_api_keys
+
+  secret_id     = aws_secretsmanager_secret.this[each.key].id
+  secret_string = local.secret_payloads[each.key]
 }
 
 data "aws_lambda_function" "rotation" {
@@ -37,10 +67,7 @@ data "aws_lambda_function" "rotation" {
 }
 
 resource "aws_secretsmanager_secret_rotation" "this" {
-  for_each = {
-    for key, api_key in local.api_keys : key => api_key
-    if var.settings.rotation_lambda != null && api_key.secret.rotation_enabled
-  }
+  for_each = local.rotating_api_keys
 
   # Referencing the initial version ensures the secret value exists before rotation is enabled.
   secret_id           = aws_secretsmanager_secret_version.this[each.key].secret_id

@@ -46,8 +46,8 @@ run "rotation_disabled_without_lambda" {
   }
 
   assert {
-    condition     = length(aws_secretsmanager_secret.this) == 2 && length(aws_secretsmanager_secret_rotation.this) == 0 && length(data.aws_lambda_function.rotation) == 0
-    error_message = "No key may create a rotation schedule without the module-wide Lambda."
+    condition     = length(aws_secretsmanager_secret.this) == 2 && length(aws_secretsmanager_secret_version.this) == 0 && length(aws_secretsmanager_secret_version.non_rotating) == 2 && length(aws_secretsmanager_secret_rotation.this) == 0 && length(data.aws_lambda_function.rotation) == 0
+    error_message = "Without the module-wide Lambda, every key must have a Terraform-updated version and no rotation schedule."
   }
 }
 
@@ -169,6 +169,8 @@ run "rotation_opt_out_is_per_key" {
   assert {
     condition = (
       length(aws_secretsmanager_secret.this) == 2 &&
+      length(aws_secretsmanager_secret_version.this) == 1 &&
+      length(aws_secretsmanager_secret_version.non_rotating) == 1 &&
       length(aws_secretsmanager_secret_rotation.this) == 1 &&
       contains(keys(aws_secretsmanager_secret_rotation.this), "engineering/reporting") &&
       !contains(keys(aws_secretsmanager_secret_rotation.this), "engineering/backend")
@@ -206,15 +208,15 @@ run "json_secret_tracks_every_key_without_rotation" {
   assert {
     condition = alltrue([
       for key in ["engineering/backend", "shared/reporting"] : (
-        length(keys(jsondecode(aws_secretsmanager_secret_version.this[key].secret_string))) == 4 &&
-        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key == openrouter_api_key.this[key].key &&
-        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key_id == openrouter_api_key.this[key].id &&
-        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).name == openrouter_api_key.this[key].name &&
-        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).workspace_id == openrouter_api_key.this[key].workspace_id
+        length(keys(jsondecode(aws_secretsmanager_secret_version.non_rotating[key].secret_string))) == 4 &&
+        jsondecode(aws_secretsmanager_secret_version.non_rotating[key].secret_string).api_key == openrouter_api_key.this[key].key &&
+        jsondecode(aws_secretsmanager_secret_version.non_rotating[key].secret_string).api_key_id == openrouter_api_key.this[key].id &&
+        jsondecode(aws_secretsmanager_secret_version.non_rotating[key].secret_string).name == openrouter_api_key.this[key].name &&
+        jsondecode(aws_secretsmanager_secret_version.non_rotating[key].secret_string).workspace_id == openrouter_api_key.this[key].workspace_id
       )
       ]) && (
-      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).workspace_id == "ws_engineering" &&
-      jsondecode(aws_secretsmanager_secret_version.this["shared/reporting"].secret_string).workspace_id == "ws_shared"
+      jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/backend"].secret_string).workspace_id == "ws_engineering" &&
+      jsondecode(aws_secretsmanager_secret_version.non_rotating["shared/reporting"].secret_string).workspace_id == "ws_shared"
     )
     error_message = "Without rotation, each JSON secret must contain its own API key, key ID, key name, and workspace ID."
   }
@@ -246,15 +248,18 @@ run "json_secret_tracks_every_key_with_rotation" {
   }
 
   assert {
-    condition = alltrue([
-      for key in ["engineering/backend", "engineering/reporting"] : (
-        length(keys(jsondecode(aws_secretsmanager_secret_version.this[key].secret_string))) == 4 &&
-        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key == openrouter_api_key.this[key].key &&
-        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).api_key_id == openrouter_api_key.this[key].id &&
-        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).name == openrouter_api_key.this[key].name &&
-        jsondecode(aws_secretsmanager_secret_version.this[key].secret_string).workspace_id == openrouter_api_key.this[key].workspace_id
-      )
-      ]) && (
+    condition = (
+      length(keys(jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string))) == 4 &&
+      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).api_key == openrouter_api_key.this["engineering/backend"].key &&
+      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).api_key_id == openrouter_api_key.this["engineering/backend"].id &&
+      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).name == openrouter_api_key.this["engineering/backend"].name &&
+      jsondecode(aws_secretsmanager_secret_version.this["engineering/backend"].secret_string).workspace_id == openrouter_api_key.this["engineering/backend"].workspace_id &&
+      contains(aws_secretsmanager_secret_version.this["engineering/backend"].version_stages, "TFBOOTSTRAP") &&
+      length(keys(jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string))) == 4 &&
+      jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string).api_key == openrouter_api_key.this["engineering/reporting"].key &&
+      jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string).api_key_id == openrouter_api_key.this["engineering/reporting"].id &&
+      jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string).name == openrouter_api_key.this["engineering/reporting"].name &&
+      jsondecode(aws_secretsmanager_secret_version.non_rotating["engineering/reporting"].secret_string).workspace_id == openrouter_api_key.this["engineering/reporting"].workspace_id &&
       length(aws_secretsmanager_secret_rotation.this) == 1 &&
       contains(keys(aws_secretsmanager_secret_rotation.this), "engineering/backend")
     )
@@ -283,7 +288,7 @@ run "json_secret_tracks_provider_default_workspace" {
     condition = (
       local.workspace_ids["default"] == null &&
       openrouter_api_key.this["default/backend"].workspace_id != null &&
-      openrouter_api_key.this["default/backend"].workspace_id == jsondecode(aws_secretsmanager_secret_version.this["default/backend"].secret_string).workspace_id
+      openrouter_api_key.this["default/backend"].workspace_id == jsondecode(aws_secretsmanager_secret_version.non_rotating["default/backend"].secret_string).workspace_id
     )
     error_message = "A key without a workspace selector must store the provider-returned workspace ID."
   }

@@ -96,13 +96,55 @@ secret version when applied. JSON consumers upgrading from earlier schemas must
 accept the additional field. Existing plain-string deployments must remove
 `secret.plain = true` and update consumers to parse JSON before applying this version.
 
-**Migration warning:** For an already-rotated JSON secret, applying the changed
-`secret_string` writes a new version and moves `AWSCURRENT` to Terraform's original-key
-payload. Consumers can switch from the Lambda-rotated credential to a stale or
-disabled original key. Back up the current version, coordinate and reconcile key
-ownership with the rotation Lambda and consumers before upgrading, and test in a
-nonproduction environment first. Adding the tracking fields does not resolve
-drift between Terraform-managed and Lambda-managed keys.
+**Migration warning:** Older module versions could write a new `secret_string`
+version during an apply and move `AWSCURRENT` back to Terraform's original-key
+payload. This version stops payload-driven replacement for rotation-enabled keys
+after upgrade, but changing rotation ownership or losing the tracked bootstrap
+version still needs care. Back up the current version, coordinate
+with the rotation Lambda and consumers, and test in a nonproduction environment.
+Tracking fields do not resolve drift between Terraform-managed and Lambda-managed keys.
+
+### Secret-version ownership during rotation
+
+A key with a module-wide rotation Lambda and `secret.rotation_enabled = true` has a
+Terraform-created **bootstrap version**. The Lambda owns subsequent versions and
+`AWSCURRENT`; Terraform ignores changes to the bootstrap payload and staging labels.
+New bootstrap versions receive the `TFBOOTSTRAP` staging label, so ordinary rotation
+does not reclaim `AWSCURRENT` or leave the bootstrap version eligible for normal
+unlabeled-version cleanup. AWS assigns `AWSCURRENT` to the first version of a new
+secret; later rotation moves it to the Lambda-created version. Keys without rotation
+or with a per-key opt-out use normally managed secret versions, so Terraform still
+updates their payload when the managed OpenRouter key changes. The custom label
+intentionally retains the original secret value; protect access to that old version
+and account for its retention in your security policy.
+
+**Upgrade existing state before applying this module version.** Existing rotating
+versions keep their `aws_secretsmanager_secret_version.this` state addresses, but
+`ignore_changes` will not retroactively add `TFBOOTSTRAP`. For each such secret,
+identify the exact Terraform-managed version ID and add the `TFBOOTSTRAP` staging
+label to that version without moving or removing `AWSCURRENT`. Existing nonrotating
+and opted-out keys must move state from `this` to `non_rotating` before the first plan
+or apply, for example from the Terragrunt deployment directory (adjust addresses for
+a nested module):
+
+```sh
+terragrunt state mv \
+  'aws_secretsmanager_secret_version.this["engineering/backend"]' \
+  'aws_secretsmanager_secret_version.non_rotating["engineering/backend"]'
+```
+
+Back up state and the current secret first, perform the move for every affected key,
+then inspect a plan before applying. Do not let Terraform destroy/recreate version
+resources as a substitute for state migration. Enabling or disabling rotation later
+also changes the resource address and requires a state move. When moving a key into
+rotating ownership, add `TFBOOTSTRAP` to its existing version before enabling the
+schedule. In particular, moving a previously rotated key back to nonrotating
+ownership can publish the Terraform-original (possibly stale or disabled)
+credential; reconcile OpenRouter key and secret ownership
+with consumers before that transition. If the old bootstrap version is missing,
+Terraform can recreate it; with an existing `AWSCURRENT`, the custom stage prevents
+that recreation from promoting the bootstrap payload. This module cannot adopt
+Lambda-created OpenRouter keys automatically.
 
 ### Rotation prerequisites
 
@@ -129,11 +171,12 @@ When rotation is configured, the AWS provider enables it immediately by default,
 so Secrets Manager may invoke the Lambda during the first apply; ensure the Lambda
 and permissions are ready for every participating key.
 
-Terraform still owns the original OpenRouter API key and initial secret version. If the
-rotation Lambda revokes or deletes that key, a later apply may recreate the key and its
-secret version. Replacement keys created by the Lambda are not automatically adopted
-into Terraform state, and module outputs continue to describe the Terraform-managed
-key. Coordinate key ownership and drift handling before enabling external rotation.
+Terraform still owns the original OpenRouter API key and bootstrap secret version.
+If the rotation Lambda revokes or deletes that key, a later apply may recreate the key,
+but normal payload drift does not replace the rotating bootstrap secret version.
+Replacement keys created by the Lambda are not automatically adopted into Terraform
+state, and module outputs continue to describe the Terraform-managed key. Coordinate
+key ownership and drift handling before enabling external rotation.
 
 ## Usage
 
@@ -480,6 +523,7 @@ Available targets:
 | ---- | ---- |
 | [aws_secretsmanager_secret.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret) | resource |
 | [aws_secretsmanager_secret_rotation.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_rotation) | resource |
+| [aws_secretsmanager_secret_version.non_rotating](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
 | [aws_secretsmanager_secret_version.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
 | [openrouter_api_key.this](https://registry.terraform.io/providers/cloudopsworks/openrouter/latest/docs/resources/api_key) | resource |
 | [aws_lambda_function.rotation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/lambda_function) | data source |
