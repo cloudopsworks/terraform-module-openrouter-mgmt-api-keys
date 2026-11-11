@@ -605,8 +605,8 @@ Available targets:
 
 | Name | Version |
 | ---- | ------- |
-| <a name="provider_aws"></a> [aws](#provider\_aws) | 6.72.0 |
-| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | 0.4.0 |
+| <a name="provider_aws"></a> [aws](#provider\_aws) | ~> 6.35 |
+| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | ~> 0.1 |
 
 ## Modules
 
