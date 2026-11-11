@@ -65,9 +65,10 @@ when rotation is off, or the configured Lambda when rotation is on.
    `name`, and `workspace_id`. New rotating secrets start with a noncredential
    bootstrap marker until the Lambda creates the first key.
 5. **Schedules Lambda-owned rotation** for every enrolled key when module-wide
-   `settings.rotation_lambda` is set to a Lambda name or ARN. Set the shared interval
-   with `settings.rotation_period_days` (default: 30 days). Per-key opt-out is
-   available but not recommended.
+   `settings.rotation_lambda` is set to a Lambda name or ARN. The default is every
+   30 days with an AWS-managed window starting at 00:00 UTC. Set a shorter window
+   explicitly, or use a cron schedule to choose a different UTC start hour.
+   Per-key opt-out is available but not recommended.
 
 When no workspace selector is set, the module passes `null` for `workspace_id`.
 OpenRouter may assign a default workspace; the active credential version should
@@ -224,7 +225,9 @@ terragrunt apply
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
 #   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; when set, Lambda owns creation and rotation of enrolled keys. Omit for Terraform ownership. ARN example: arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key
 #   # Bare names use the configured AWS provider account/Region; full ARNs pass through, including any qualifier.
-#   rotation_period_days: 30            # (Optional) Module-wide rotation interval in whole days, 1-1000. Default: 30; used when rotation is enabled
+#   rotation_period_days: 30            # (Optional) Rotation interval in whole days, 1-1000. Default: 30; ignored with cron. 1000 uses legacy scheduling without a window override
+#   rotation_window_hours: 1            # (Optional) Rotation window in whole hours, 1-23. Omit for the AWS default
+#   rotation_cron_expression: "cron(0 3 1 * ? *)" # (Optional) AWS cron at one UTC hour; overrides the interval. Default: null
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -238,7 +241,7 @@ terragrunt apply
 #           limit_reset: "monthly"       # (Optional) Reset interval. Valid values: daily, weekly, monthly
 #           include_byok_in_limit: true   # (Optional) Whether BYOK usage counts toward the limit
 #           disabled: false               # (Optional) Whether the key is disabled. Default: provider/API default; rotation Lambda applies it via PATCH after Create
-#           expires_at: "2026-12-31T23:59:59Z" # (Optional) UTC ISO-8601 expiration timestamp
+#           expires_at: "2026-12-31T23:59:59Z" # (Optional) Fixed UTC ISO-8601 expiration; required for rotating keys with cron
 #           creator_user_id: "user_123"  # (Optional) OpenRouter organization member ID to set as creator
 #           secret:                       # (Optional) AWS Secrets Manager configuration for storing the API key
 #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name
@@ -328,7 +331,9 @@ inputs = {
 | `spoke_def` | `string` | no | Three-digit spoke identifier. Default: `"001"` |
 | `extra_tags` | `map(string)` | no | Additional tags merged onto all AWS secrets |
 | `settings.rotation_lambda` | `string` | no | Existing module-wide Lambda name or ARN; when set, Lambda owns key creation/rotation for enrolled keys. Omit for Terraform ownership |
-| `settings.rotation_period_days` | `number` | no | Shared rotation interval in whole days, 1–1000; default `30`. Used when rotation is enabled |
+| `settings.rotation_period_days` | `number` | no | Shared interval in whole days, 1–1000; default `30`. 1000 uses legacy scheduling without a window override. Ignored with cron |
+| `settings.rotation_window_hours` | `number` | no | Rotation window in whole hours, 1–23. Omit for the AWS default. An explicit window cannot cross midnight UTC |
+| `settings.rotation_cron_expression` | `string` | no | AWS six-field cron at minute 0 and a single numeric UTC hour; overrides the rate. Default: unset |
 | `settings.workspaces` | `map(object)` | no | Map of OpenRouter workspaces keyed by logical name |
 
 ### `settings.workspaces.<key>`
@@ -352,7 +357,7 @@ inputs = {
 | `limit_reset` | `string` | no | One of `daily`, `weekly`, `monthly` |
 | `include_byok_in_limit` | `bool` | no | Whether BYOK usage counts toward the limit |
 | `disabled` | `bool` | no | Whether the API key is disabled; the Lambda must PATCH this after Create when set |
-| `expires_at` | `string` | no | Fixed UTC ISO-8601 expiration timestamp; rotation does not extend it automatically |
+| `expires_at` | `string` | with cron for rotating keys | Fixed UTC ISO-8601 expiration timestamp; rotation does not extend it automatically |
 | `creator_user_id` | `string` | no | Creator member identifier in OpenRouter |
 | `secret.name_prefix` | `string` | no | Secret name prefix composed as `name_prefix-<system_name>` |
 | `secret.name` | `string` | no | Fixed secret name |
@@ -471,10 +476,30 @@ inputs = {
 ## Module-wide Secrets Manager rotation
 
 The Lambda must already exist and have the permissions described under **Rotation Lambda prerequisites**.
-Supplying one `settings.rotation_lambda` name or ARN enables rotation for every key at
-the shared `settings.rotation_period_days` interval. Set `secret.rotation_enabled = false`
-only for an exceptional opt-out; this is **not recommended**.
-Setting a period alone does not enable rotation.
+Supplying one `settings.rotation_lambda` name or ARN enables rotation for every enrolled
+key. Set `secret.rotation_enabled = false` only for an exceptional opt-out; this is
+**not recommended**. Setting a schedule alone does not enable rotation.
+
+The default rate is `rate(30 days)`, with the rotation window starting at midnight UTC.
+When `settings.rotation_window_hours` is omitted, AWS controls the window length;
+day-based schedules can run through the end of the UTC day. Set an explicit window
+length, such as one hour, to leave predictable time for decommissioning.
+This setting controls the length, not the start time.
+For a different start hour, set `settings.rotation_cron_expression`: for example,
+`cron(0 3 1 * ? *)` starts the window at 03:00 UTC on the first day of each month.
+This replaces the day interval; a monthly calendar schedule is not an exact 30-day interval.
+The [AWS cron rules](https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotate-secrets_schedule.html)
+govern the calendar fields. Every enrolled key on cron must set a fixed `expires_at`:
+choose an expiration after the next scheduled rotation plus a safety margin, and update
+it before it becomes too near. The Lambda does not extend it automatically.
+
+Existing day intervals of 1–999 migrate from `automatically_after_days` to a rate
+expression on apply. A 1000-day interval keeps legacy scheduling when neither cron
+nor a window override is set. To configure a window, use at most 999 days or set cron.
+Review the Terragrunt plan before rollout: a schedule change can invoke Lambda immediately.
+Decommission keys outside the scheduled window. Do not start manual rotation during
+teardown, and verify no rotation is in flight before revoking the exact OpenRouter key
+IDs. Scheduling deletion of the AWS secret does not revoke those keys in OpenRouter.
 
 ```hcl
 inputs = {
@@ -489,6 +514,7 @@ inputs = {
     # Alternatively use the function name "rotate-openrouter-key" for an AWS Lambda lookup.
     rotation_lambda = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key"
     rotation_period_days = 45
+    rotation_window_hours = 2
     workspaces = {
       engineering = {
         workspace_id = "ws_1234567890"
@@ -579,8 +605,8 @@ Available targets:
 
 | Name | Version |
 | ---- | ------- |
-| <a name="provider_aws"></a> [aws](#provider\_aws) | 6.72.0 |
-| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | 0.4.0 |
+| <a name="provider_aws"></a> [aws](#provider\_aws) | ~> 6.35 |
+| <a name="provider_openrouter"></a> [openrouter](#provider\_openrouter) | ~> 0.1 |
 
 ## Modules
 
@@ -609,7 +635,7 @@ Available targets:
 | <a name="input_extra_tags"></a> [extra\_tags](#input\_extra\_tags) | Extra tags to add to the resources | `map(string)` | `{}` | no |
 | <a name="input_is_hub"></a> [is\_hub](#input\_is\_hub) | Is this a hub or spoke configuration? | `bool` | `false` | no |
 | <a name="input_org"></a> [org](#input\_org) | Organization details | <pre>object({<br/>    organization_name = string<br/>    organization_unit = string<br/>    environment_type  = string<br/>    environment_name  = string<br/>  })</pre> | n/a | yes |
-| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    rotation_lambda      = optional(string)<br/>    rotation_period_days = optional(number, 30)<br/>    workspaces = optional(map(object({<br/>      workspace_id   = optional(string)<br/>      workspace_name = optional(string)<br/>      workspace_slug = optional(string)<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix      = optional(string)<br/>          name             = optional(string)<br/>          path             = optional(string)<br/>          plain            = optional(bool, false)<br/>          description      = optional(string)<br/>          rotation_enabled = optional(bool, true)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
+| <a name="input_settings"></a> [settings](#input\_settings) | Settings for OpenRouter workspace API key management and AWS Secrets Manager persistence | <pre>object({<br/>    rotation_lambda          = optional(string)<br/>    rotation_period_days     = optional(number, 30) # (Optional) Whole-day interval, 1-1000; 1000 uses legacy scheduling without a window override. Ignored with cron. Default: 30<br/>    rotation_window_hours    = optional(number)     # (Optional) Whole-hour window, 1-23. Omit for the AWS default<br/>    rotation_cron_expression = optional(string)     # (Optional) AWS cron at one UTC hour; overrides the interval. Default: null<br/>    workspaces = optional(map(object({<br/>      workspace_id   = optional(string)<br/>      workspace_name = optional(string)<br/>      workspace_slug = optional(string)<br/>      api_keys = optional(map(object({<br/>        name_prefix           = optional(string)<br/>        name                  = optional(string)<br/>        limit                 = optional(number)<br/>        limit_reset           = optional(string)<br/>        include_byok_in_limit = optional(bool)<br/>        disabled              = optional(bool)<br/>        expires_at            = optional(string)<br/>        creator_user_id       = optional(string)<br/>        secret = optional(object({<br/>          name_prefix      = optional(string)<br/>          name             = optional(string)<br/>          path             = optional(string)<br/>          plain            = optional(bool, false)<br/>          description      = optional(string)<br/>          rotation_enabled = optional(bool, true)<br/>        }), {})<br/>      })), {})<br/>    })), {})<br/>  })</pre> | `{}` | no |
 | <a name="input_spoke_def"></a> [spoke\_def](#input\_spoke\_def) | Spoke ID Number, must be a 3 digit number | `string` | `"001"` | no |
 
 ## Outputs

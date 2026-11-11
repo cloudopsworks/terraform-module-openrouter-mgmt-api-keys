@@ -2,7 +2,9 @@
 # settings:                               # (Optional) Settings for OpenRouter workspace API key management
 #   rotation_lambda: "rotate-openrouter-key" # (Optional) Existing module-wide Lambda name or ARN; when set, Lambda owns creation and rotation of enrolled keys. Omit for Terraform ownership. ARN example: arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter-key
 #   # Bare names use the configured AWS provider account/Region; full ARNs pass through, including any qualifier.
-#   rotation_period_days: 30            # (Optional) Module-wide rotation interval in whole days, 1-1000. Default: 30; used when rotation is enabled
+#   rotation_period_days: 30            # (Optional) Rotation interval in whole days, 1-1000. Default: 30; ignored with cron. 1000 uses legacy scheduling without a window override
+#   rotation_window_hours: 1            # (Optional) Rotation window in whole hours, 1-23. Omit for the AWS default
+#   rotation_cron_expression: "cron(0 3 1 * ? *)" # (Optional) AWS cron at one UTC hour; overrides the interval. Default: null
 #   workspaces:                           # (Optional) Map of OpenRouter workspaces keyed by a logical name
 #     engineering:                        # Logical key used to identify the workspace in this module
 #       workspace_id: "ws_1234567890"    # (Optional) OpenRouter workspace UUID. Mutually exclusive with workspace_name and workspace_slug
@@ -16,7 +18,7 @@
 #           limit_reset: "monthly"       # (Optional) Reset interval. Valid values: daily, weekly, monthly
 #           include_byok_in_limit: true   # (Optional) Whether BYOK usage counts toward the limit
 #           disabled: false               # (Optional) Whether the key is disabled. Default: provider/API default; rotation Lambda applies it via PATCH after Create
-#           expires_at: "2026-12-31T23:59:59Z" # (Optional) UTC ISO-8601 expiration timestamp
+#           expires_at: "2026-12-31T23:59:59Z" # (Optional) Fixed UTC ISO-8601 expiration; required for rotating keys with cron
 #           creator_user_id: "user_123"  # (Optional) OpenRouter organization member ID to set as creator
 #           secret:                       # (Optional) AWS Secrets Manager configuration for storing the API key
 #             name_prefix: "backend"     # (Optional) Secret name prefix; final name = name_prefix + "-" + system_name

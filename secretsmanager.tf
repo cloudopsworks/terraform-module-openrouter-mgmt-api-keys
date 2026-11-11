@@ -11,6 +11,14 @@
 # The key value is only returned on create by the OpenRouter management API.
 
 locals {
+  # AWS accepts 1000 days only via the legacy days field, not rate().
+  rotation_uses_legacy_period = var.settings.rotation_cron_expression == null && var.settings.rotation_period_days == 1000
+  rotation_schedule_expression = local.rotation_uses_legacy_period ? null : (
+    var.settings.rotation_cron_expression != null
+    ? join(" ", regexall("\\S+", var.settings.rotation_cron_expression))
+    : "rate(${var.settings.rotation_period_days} ${var.settings.rotation_period_days == 1 ? "day" : "days"})"
+  )
+
   rotating_api_keys = {
     for key, api_key in local.api_keys : key => api_key
     if var.settings.rotation_lambda != null && api_key.secret.rotation_enabled
@@ -118,7 +126,9 @@ resource "aws_secretsmanager_secret_rotation" "this" {
   rotation_lambda_arn = startswith(var.settings.rotation_lambda, "arn:") ? var.settings.rotation_lambda : data.aws_lambda_function.rotation[0].arn
 
   rotation_rules {
-    automatically_after_days = var.settings.rotation_period_days
+    automatically_after_days = local.rotation_uses_legacy_period ? var.settings.rotation_period_days : null
+    schedule_expression      = local.rotation_schedule_expression
+    duration                 = var.settings.rotation_window_hours == null ? null : "${var.settings.rotation_window_hours}h"
   }
 
   depends_on = [aws_secretsmanager_secret_version.rotation_config]

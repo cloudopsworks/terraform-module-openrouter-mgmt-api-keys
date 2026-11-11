@@ -58,6 +58,7 @@ run "rotation_uses_configured_period" {
     settings = {
       rotation_lambda      = "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
       rotation_period_days = 45
+      rotation_window_hours = 3
       workspaces = {
         engineering = {
           workspace_id = "ws_example"
@@ -80,12 +81,14 @@ run "rotation_uses_configured_period" {
       length(aws_secretsmanager_secret_version.rotation_config) == 2 &&
       length(aws_secretsmanager_secret_rotation.this) == 2 &&
       length(data.aws_lambda_function.rotation) == 0 &&
-      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].automatically_after_days == 45 &&
-      aws_secretsmanager_secret_rotation.this["engineering/reporting"].rotation_rules[0].automatically_after_days == 45 &&
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].schedule_expression == "rate(45 days)" &&
+      aws_secretsmanager_secret_rotation.this["engineering/reporting"].rotation_rules[0].schedule_expression == "rate(45 days)" &&
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].duration == "3h" &&
+      aws_secretsmanager_secret_rotation.this["engineering/reporting"].rotation_rules[0].duration == "3h" &&
       aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_lambda_arn == "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter" &&
       aws_secretsmanager_secret_rotation.this["engineering/reporting"].rotation_lambda_arn == "arn:aws:lambda:us-east-1:123456789012:function:rotate-openrouter"
     )
-    error_message = "A module-wide Lambda must rotate every key with the same configured interval."
+    error_message = "A module-wide Lambda must rotate every enrolled key with the same configured interval and window."
   }
 }
 
@@ -109,9 +112,198 @@ run "rotation_defaults_to_30_days" {
   }
 
   assert {
-    condition     = aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].automatically_after_days == 30
-    error_message = "Rotation must default to a 30-day interval when the global Lambda is configured."
+    condition = (
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].schedule_expression == "rate(30 days)" &&
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].duration == null
+    )
+    error_message = "Rotation must default to a 30-day interval with the AWS-managed window."
   }
+}
+
+run "rotation_uses_singular_daily_rate" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_lambda      = "rotate-openrouter"
+      rotation_period_days = 1
+      workspaces = {
+        engineering = {
+          api_keys = {
+            backend = { name = "backend" }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].schedule_expression == "rate(1 day)"
+    error_message = "A one-day schedule must use the singular AWS rate unit."
+  }
+}
+
+run "rotation_preserves_legacy_1000_day_period" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_lambda      = "rotate-openrouter"
+      rotation_period_days = 1000
+      workspaces = {
+        engineering = {
+          api_keys = {
+            backend = { name = "backend" }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].automatically_after_days == 1000 &&
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].schedule_expression == null &&
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].duration == null
+    )
+    error_message = "A 1000-day interval without cron or a window override must retain legacy scheduling."
+  }
+}
+
+run "rotation_rejects_window_override_for_legacy_period" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_period_days  = 1000
+      rotation_window_hours = 1
+    }
+  }
+
+  expect_failures = [var.settings]
+}
+
+run "rotation_uses_cron_and_requires_expiry_only_for_enrolled_keys" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_lambda          = "rotate-openrouter"
+      rotation_period_days     = 1000
+      rotation_cron_expression = "  cron(0  22 1 * ? *)  "
+      rotation_window_hours    = 2
+      workspaces = {
+        engineering = {
+          api_keys = {
+            backend = {
+              name       = "backend"
+              expires_at = "2099-12-31T23:59:59Z"
+            }
+            reporting = {
+              name   = "reporting"
+              secret = { rotation_enabled = false }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      length(aws_secretsmanager_secret_rotation.this) == 1 &&
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].schedule_expression == "cron(0 22 1 * ? *)" &&
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].duration == "2h" &&
+      jsondecode(aws_secretsmanager_secret_version.rotation_config["engineering/backend"].secret_string).expires_at == "2099-12-31T23:59:59Z"
+    )
+    error_message = "Cron must replace the day rate, preserve the expiry, and leave opted-out keys unscheduled."
+  }
+}
+
+run "rotation_uses_cron_with_aws_managed_window" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_lambda          = "rotate-openrouter"
+      rotation_cron_expression = "cron(0 23 1 * ? *)"
+      workspaces = {
+        engineering = {
+          api_keys = {
+            backend = {
+              name       = "backend"
+              expires_at = "2099-12-31T23:59:59Z"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].schedule_expression == "cron(0 23 1 * ? *)" &&
+      aws_secretsmanager_secret_rotation.this["engineering/backend"].rotation_rules[0].duration == null
+    )
+    error_message = "Cron without a window override must leave duration to AWS."
+  }
+}
+
+run "rotation_rejects_cron_without_enrolled_key_expiry" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_lambda          = "rotate-openrouter"
+      rotation_cron_expression = "cron(0 3 1 * ? *)"
+      workspaces = {
+        engineering = {
+          api_keys = {
+            backend = { name = "backend" }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.settings]
+}
+
+run "rotation_rejects_window_crossing_midnight" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_cron_expression = "cron(0 23 1 * ? *)"
+      rotation_window_hours    = 2
+    }
+  }
+
+  expect_failures = [var.settings]
+}
+
+run "rotation_rejects_invalid_cron_hour" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_cron_expression = "cron(0 24 1 * ? *)"
+    }
+  }
+
+  expect_failures = [var.settings]
+}
+
+run "rotation_rejects_fractional_window" {
+  command = plan
+
+  variables {
+    settings = {
+      rotation_window_hours = 1.5
+    }
+  }
+
+  expect_failures = [var.settings]
 }
 
 run "rotation_resolves_lambda_name" {
